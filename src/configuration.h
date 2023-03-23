@@ -21,6 +21,7 @@ enum class DRAMProtocol {
     HBM,
     HBM2,
     HMC,
+    MEMPOOL,
     SIZE
 };
 
@@ -119,6 +120,9 @@ class Config {
     int num_vaults;
     int block_size;  // block size in bytes
     int xbar_queue_depth;
+
+    // memory pool
+    int rtt;
 
     // System
     std::string address_mapping;

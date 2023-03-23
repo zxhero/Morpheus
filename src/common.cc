@@ -41,6 +41,49 @@ std::istream& operator>>(std::istream& is, Transaction& trans) {
     return is;
 }
 
+std::ostream& operator<<(std::ostream& os, const HMTTTransaction& trans){
+    const std::string trans_type = trans.r_w ? "WRITE" : "READ";
+    os << fmt::format("{:<30} {:>8}", trans.addr, trans_type);
+    return os;
+}
+
+std::istream& operator>>(std::istream& is, HMTTTransaction& trans){
+    uint64_t buffer = 0;
+    uint64_t invalid_count = 0;
+
+    while(1){
+        is.read(reinterpret_cast<char*>(&buffer), 6);
+        trans.seq_no = (unsigned int) ((buffer >> 40) & 0xffU);
+        unsigned long long timer  = (unsigned long long)((buffer >> 32) & 0xffULL);
+        trans.r_w    = (unsigned int)((buffer >> 31) & 0x1U);
+        trans.addr   = (unsigned long)(buffer & 0x7fffffffUL);
+        trans.addr   = (unsigned long)(trans.addr << 6);
+        //print(tmp);
+        if (trans.addr == 0 && timer == 0) {
+            invalid_count++;
+        }
+        else {
+            timer += invalid_count * 256;
+            trans.added_ns = timer * 5; //200MHz
+            trans.valid = true;
+            if(trans.addr >= (2ULL << 30)) {
+                trans.addr += (2ULL << 30);
+                trans.is_kernel = false;
+            }else{
+                trans.is_kernel = true;
+            }
+            //::cout<<trans.added_ns<<" "<<std::hex<<trans.addr<<(trans.is_kernel ? " kernel" : " app")
+            //<<(trans.r_w ? " Read": " Write")<<"\n"<<std::dec;
+            return is;
+        }
+
+        if(is.eof()){
+            trans.valid = false;
+            return is;
+        }
+    }
+}
+
 int GetBitInPos(uint64_t bits, int pos) {
     // given a uint64_t value get the binary value of pos-th bit
     // from MSB to LSB indexed as 63 - 0

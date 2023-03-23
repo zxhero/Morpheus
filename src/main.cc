@@ -52,7 +52,7 @@ int main(int argc, const char **argv) {
 
     CPU *cpu;
     if (!trace_file.empty()) {
-        cpu = new TraceBasedCPU(config_file, output_dir, trace_file);
+        cpu = new HMTTCPU(config_file, output_dir, trace_file);
     } else {
         if (stream_type == "stream" || stream_type == "s") {
             cpu = new StreamCPU(config_file, output_dir);
@@ -61,9 +61,15 @@ int main(int argc, const char **argv) {
         }
     }
 
-    for (uint64_t clk = 0; clk < cycles; clk++) {
+    dynamic_cast<HMTTCPU*>(cpu)->WarmUp();
+    for (uint64_t clk = 0; clk < cycles && (!dynamic_cast<HMTTCPU*>(cpu)->IsEnd()); clk++) {
         cpu->ClockTick();
+        if(clk % 1000000 == 0){
+            std::cout<<"processing "<<clk<<" clks and "<<dynamic_cast<HMTTCPU*>(cpu)->GetTraceNum()<<" traces "
+            <<dynamic_cast<HMTTCPU*>(cpu)->GetClk()<<" wall clks\n"<<std::flush;
+        }
     }
+    dynamic_cast<HMTTCPU*>(cpu)->Drained();
     cpu->PrintStats();
 
     delete cpu;

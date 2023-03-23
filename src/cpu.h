@@ -5,6 +5,8 @@
 #include <functional>
 #include <random>
 #include <string>
+#include <list>
+#include <utility>
 #include "memory_system.h"
 
 namespace dramsim3 {
@@ -16,11 +18,16 @@ class CPU {
               config_file, output_dir,
               std::bind(&CPU::ReadCallBack, this, std::placeholders::_1),
               std::bind(&CPU::WriteCallBack, this, std::placeholders::_1)),
-          clk_(0) {}
+          clk_(0) {};
+    CPU(const std::string& config_file, const std::string& output_dir, std::function<void(uint64_t)> read_callback_)
+        : memory_system_(
+              config_file, output_dir, read_callback_,
+              std::bind(&CPU::WriteCallBack, this, std::placeholders::_1)),
+          clk_(0) {};
     virtual void ClockTick() = 0;
-    void ReadCallBack(uint64_t addr) { return; }
+    virtual void ReadCallBack(uint64_t addr) { return; }
     void WriteCallBack(uint64_t addr) { return; }
-    void PrintStats() { memory_system_.PrintStats(); }
+    virtual void PrintStats() { memory_system_.PrintStats(); }
 
    protected:
     MemorySystem memory_system_;
@@ -58,13 +65,48 @@ class TraceBasedCPU : public CPU {
    public:
     TraceBasedCPU(const std::string& config_file, const std::string& output_dir,
                   const std::string& trace_file);
+    TraceBasedCPU(const std::string& config_file, const std::string& output_dir,
+                  const std::string& trace_file, std::function<void(uint64_t)> read_callback_);
     ~TraceBasedCPU() { trace_file_.close(); }
     void ClockTick() override;
 
-   private:
+   protected:
     std::ifstream trace_file_;
     Transaction trans_;
     bool get_next_ = true;
+};
+
+class HMTTCPU : public TraceBasedCPU {
+   private:
+    const int rob_sz ;
+    const int mshr_sz = 64;
+    const int skipping = 1000000;
+    const int simulating = 1000000;
+    //const double clk_ns = 0.5; //2GHz
+    HMTTTransaction tmp;
+    uint64_t last_req_ns;
+    std::list<HMTTTransaction> rob;
+    std::list<HMTTTransaction>::iterator wait;
+    uint64_t outstanding;
+    MemorySystem memory_system_local;
+
+    //statics
+    uint64_t kernel_trace_count;
+    uint64_t app_trace_count;
+    uint64_t  wall_clk;
+    uint64_t max_outstanding;
+   public:
+    HMTTCPU(const std::string& config_file, const std::string& output_dir,
+                  const std::string& trace_file);
+   // ~HMTTCPU() : ~TraceBasedCPU(){};
+    void ClockTick() override;
+    void ReadCallBack(uint64_t addr) override;
+    void PrintStats() override;
+    bool IsEnd();
+    uint64_t GetTraceNum();
+    uint64_t GetClk();
+    void WarmUp();
+    void Drained();
 };
 
 }  // namespace dramsim3

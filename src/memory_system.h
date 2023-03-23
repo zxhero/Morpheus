@@ -7,6 +7,7 @@
 #include "configuration.h"
 #include "dram_system.h"
 #include "hmc.h"
+#include "cadcache.h"
 
 namespace dramsim3 {
 

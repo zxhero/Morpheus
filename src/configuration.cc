@@ -68,7 +68,8 @@ DRAMProtocol Config::GetDRAMProtocol(std::string protocol_str) {
         {"GDDR5", DRAMProtocol::GDDR5},   {"GDDR5X", DRAMProtocol::GDDR5X},  {"GDDR6", DRAMProtocol::GDDR6},
         {"LPDDR", DRAMProtocol::LPDDR},   {"LPDDR3", DRAMProtocol::LPDDR3},
         {"LPDDR4", DRAMProtocol::LPDDR4}, {"HBM", DRAMProtocol::HBM},
-        {"HBM2", DRAMProtocol::HBM2},     {"HMC", DRAMProtocol::HMC}};
+        {"HBM2", DRAMProtocol::HBM2},     {"HMC", DRAMProtocol::HMC},
+        {"MEMPOOL", DRAMProtocol::MEMPOOL}};
 
     if (protocol_pairs.find(protocol_str) == protocol_pairs.end()) {
         std::cout << "Unkwown/Unsupported DRAM Protocol: " << protocol_str
@@ -113,6 +114,9 @@ void Config::InitDRAMParams() {
     link_speed = GetInteger("hmc", "link_speed", 15000);  //MHz
     block_size = GetInteger("hmc", "block_size", 64);
     xbar_queue_depth = GetInteger("hmc", "xbar_queue_depth", 16);
+    //memory pool specific parameters
+    rtt = GetInteger("memory_pool", "RTT", 1500); //ns
+
     if (IsHMC()) {
         // the BL for HMC is determined by max block_size, which is a multiple
         // of 32B, each "device" transfer 32b per half cycle therefore BL is 8
