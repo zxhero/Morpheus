@@ -129,6 +129,7 @@ struct HMTTTransaction {
     uint64_t seq_no,r_w;
     uint64_t addr;
     uint64_t added_ns;
+    uint64_t issued_clk;
     bool valid;
     bool is_kernel;
     bool is_finished;

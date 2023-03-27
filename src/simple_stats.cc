@@ -285,7 +285,7 @@ void SimpleStats::UpdateHistoBins() {
     }
 }
 
-double SimpleStats::GetHistoAvg(const HistoCount& hist_counts) const {
+double SimpleStats::GetHistoAvg(const HistoCount& hist_counts) {
     uint64_t accu_sum = 0;
     uint64_t count = 0;
     for (auto i = hist_counts.begin(); i != hist_counts.end(); i++) {

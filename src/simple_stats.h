@@ -42,9 +42,11 @@ class SimpleStats {
     // Reset (usually after one phase of simulation)
     void Reset();
 
+    using HistoCount = std::unordered_map<int, uint64_t>;
+    static double GetHistoAvg(const HistoCount& histo_counts);
+
    private:
     using VecStat = std::unordered_map<std::string, std::vector<uint64_t> >;
-    using HistoCount = std::unordered_map<int, uint64_t>;
     using Json = nlohmann::json;
     void InitStat(std::string name, std::string stat_type,
                   std::string description);
@@ -57,7 +59,6 @@ class SimpleStats {
     void UpdateCounters();
     void UpdateHistoBins();
     void UpdatePrints(bool epoch);
-    double GetHistoAvg(const HistoCount& histo_counts) const;
     std::string GetTextHeader(bool is_final) const;
     void UpdateEpochStats();
     void UpdateFinalStats();

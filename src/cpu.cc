@@ -140,12 +140,13 @@ void HMTTCPU::ClockTick() {
             trace_file_ >> tmp;
             trace_id++;
             get_next_ = false;
+            //std::cout<<"["<<std::dec<<kernel_trace_count + app_trace_count<<"]: "<<tmp.added_ns
+            //<<" "<<std::hex<<tmp.addr<<(tmp.is_kernel ? " kernel" : " app")
+            //<<(tmp.r_w ? " Read": " Write")<<"\n"<<std::dec;
         }
     }
 
     if(tmp.valid){
-        //std::cout<<"["<<std::dec<<kernel_trace_count + app_trace_count<<"]: "<<tmp.added_ns<<" "<<std::hex<<tmp.addr<<(tmp.is_kernel ? " kernel" : " app")
-        //<<(tmp.r_w ? " Read": " Write")<<"\n"<<std::dec;
         if(rob.empty()){
 
             wall_clk += ceil(tmp.added_ns / memory_system_.GetTCK());
@@ -159,6 +160,7 @@ void HMTTCPU::ClockTick() {
             last_req_ns += tmp.added_ns;
             tmp.added_ns = clk_;
             tmp.is_finished = false;
+            //tmp.addr = (tmp.addr >> 12) << 12;
             rob.emplace_back(tmp);
             get_next_ = true;
             if(wait == rob.end()){
@@ -195,7 +197,7 @@ void HMTTCPU::ClockTick() {
             }else{
                 kernel_trace_count ++;
             }
-
+            wait->issued_clk = wall_clk;
             if(wait->r_w != 0){
                 outstanding ++;
                 if(outstanding > max_outstanding)
@@ -229,6 +231,15 @@ void HMTTCPU::ReadCallBack(uint64_t addr) {
     res->is_finished = true;
     outstanding --;
 
+    if(res->r_w){
+        uint64_t latency = wall_clk - res->issued_clk;
+        if(read_latency.find(latency) == read_latency.end()){
+            read_latency[latency] ++;
+        }else{
+            read_latency[latency] = 1;
+        }
+    }
+
     for (auto i = rob.begin(); i != wait; ) {
         if(i->is_finished)
             i = rob.erase(i);
@@ -247,6 +258,7 @@ void HMTTCPU::PrintStats() {
     std::cout<<std::dec<<"kernel traces: "<<kernel_trace_count<<"\n";
     std::cout<<std::dec<<"app traces: "<<app_trace_count<<"\n";
     std::cout<<"System performance downgradation: "<<1.0 * (wall_clk - clk_) / clk_ * 100.0<<" %\n";
+    std::cout<<"average read latency: "<<SimpleStats::GetHistoAvg(read_latency) * memory_system_.GetTCK()<<"ns\n";
 }
 
 bool HMTTCPU::IsEnd() {
@@ -256,12 +268,7 @@ bool HMTTCPU::IsEnd() {
         else{
             Drained();
             PrintStats();
-            kernel_trace_count = 0;
-            app_trace_count = 0;
-            last_req_ns = 0;
-            outstanding = 0;
-            wall_clk = 0;
-            max_outstanding = 0;
+            Reset();
             WarmUp();
         }
     }
@@ -289,17 +296,36 @@ void HMTTCPU::Drained() {
     while(outstanding != 0){
         memory_system_local.ClockTick();
         memory_system_.ClockTick();
+        wall_clk++;
     }
 }
 
 bool HMTTCPU::GetNextSeg() {
     //select the proper segment
     while(seg_file_>>cur_seg){
-        if(cur_seg.length() > simulating){
+        if(cur_seg.length() > simulating && cur_seg.length() > 10000000){
             std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
             return true;
         }
     }
     return false;
+}
+
+void HMTTCPU::Reset() {
+    //base class
+    clk_ = 0;
+    get_next_ = true;
+
+    //derived class
+    kernel_trace_count = 0;
+    app_trace_count = 0;
+    wall_clk = 0;
+    max_outstanding = 0;
+    read_latency.clear();
+
+    last_req_ns = 0;
+    outstanding = 0;
+    rob.clear();
+    wait = rob.end();
 }
 }  // namespace dramsim3

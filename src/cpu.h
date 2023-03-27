@@ -82,7 +82,7 @@ class HMTTCPU : public TraceBasedCPU {
     const int rob_sz ;
     const int mshr_sz = 64;
     //const int skipping = 1000000;
-    const int simulating = 100000;
+    const int simulating = 10000000;
     //const double clk_ns = 0.5; //2GHz
     HMTTTransaction tmp;
     uint64_t last_req_ns;
@@ -90,16 +90,21 @@ class HMTTCPU : public TraceBasedCPU {
     std::list<HMTTTransaction>::iterator wait;
     uint64_t outstanding;
     MemorySystem memory_system_local;
+
+    //Global variables
     std::ifstream seg_file_;
     seg cur_seg;
     uint64_t trace_id;
     bool GetNextSeg();
+    void Reset();
 
     //statics
     uint64_t kernel_trace_count;
     uint64_t app_trace_count;
     uint64_t  wall_clk;
     uint64_t max_outstanding;
+    SimpleStats::HistoCount read_latency;
+
    public:
     HMTTCPU(const std::string& config_file, const std::string& output_dir,
                   const std::string& trace_file, const std::string &seg_file);
