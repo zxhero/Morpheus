@@ -25,6 +25,10 @@ int main(int argc, const char **argv) {
         parser, "trace",
         "Trace file, setting this option will ignore -s option",
         {'t', "trace"});
+    args::ValueFlag<std::string> seg_file_arg(
+        parser, "segment",
+        "segment file",
+        {'S', "seg"});
     args::Positional<std::string> config_arg(
         parser, "config", "The config file name (mandatory)");
 
@@ -49,10 +53,15 @@ int main(int argc, const char **argv) {
     std::string output_dir = args::get(output_dir_arg);
     std::string trace_file = args::get(trace_file_arg);
     std::string stream_type = args::get(stream_arg);
+    std::string seg_file = args::get(seg_file_arg);
+
 
     CPU *cpu;
-    if (!trace_file.empty()) {
-        cpu = new HMTTCPU(config_file, output_dir, trace_file);
+    if(!trace_file.empty() && !seg_file.empty()){
+        std::cout<<seg_file<<"\n";
+        cpu = new HMTTCPU(config_file, output_dir, trace_file, seg_file);
+    } else if (!trace_file.empty()) {
+        cpu = new TraceBasedCPU(config_file, output_dir, trace_file);
     } else {
         if (stream_type == "stream" || stream_type == "s") {
             cpu = new StreamCPU(config_file, output_dir);

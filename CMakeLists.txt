@@ -39,7 +39,8 @@ add_library(dramsim3 SHARED
     src/simple_stats.cc
     src/timing.cc
     src/memory_system.cc
-        src/cadcache.cpp src/cadcache.h)
+    src/cadcache.cpp
+        src/trace_seg.cpp)
 
 if (THERMAL)
     # dependency check
@@ -117,3 +118,13 @@ add_custom_command(
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     DEPENDS dramsim3test dramsim3
 )
+
+# utils, .etc
+add_executable(trace_seg src/trace_seg.cpp)
+target_link_libraries(trace_seg PRIVATE dramsim3 args)
+target_compile_options(trace_seg PRIVATE)
+set_target_properties(trace_seg PROPERTIES
+        CXX_STANDARD 11
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+        )

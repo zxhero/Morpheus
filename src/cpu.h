@@ -8,6 +8,7 @@
 #include <list>
 #include <utility>
 #include "memory_system.h"
+#include "trace_seg.h"
 
 namespace dramsim3 {
 
@@ -80,8 +81,8 @@ class HMTTCPU : public TraceBasedCPU {
    private:
     const int rob_sz ;
     const int mshr_sz = 64;
-    const int skipping = 1000000;
-    const int simulating = 1000000;
+    //const int skipping = 1000000;
+    const int simulating = 100000;
     //const double clk_ns = 0.5; //2GHz
     HMTTTransaction tmp;
     uint64_t last_req_ns;
@@ -89,6 +90,10 @@ class HMTTCPU : public TraceBasedCPU {
     std::list<HMTTTransaction>::iterator wait;
     uint64_t outstanding;
     MemorySystem memory_system_local;
+    std::ifstream seg_file_;
+    seg cur_seg;
+    uint64_t trace_id;
+    bool GetNextSeg();
 
     //statics
     uint64_t kernel_trace_count;
@@ -97,8 +102,8 @@ class HMTTCPU : public TraceBasedCPU {
     uint64_t max_outstanding;
    public:
     HMTTCPU(const std::string& config_file, const std::string& output_dir,
-                  const std::string& trace_file);
-   // ~HMTTCPU() : ~TraceBasedCPU(){};
+                  const std::string& trace_file, const std::string &seg_file);
+    ~HMTTCPU() {seg_file_.close();};
     void ClockTick() override;
     void ReadCallBack(uint64_t addr) override;
     void PrintStats() override;

@@ -80,6 +80,7 @@ TraceBasedCPU::TraceBasedCPU(const std::string &config_file,
         std::cerr << "Trace file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
+    //std::cout<<BUFSIZ<<"\n";
 }
 
 void TraceBasedCPU::ClockTick() {
@@ -101,15 +102,16 @@ void TraceBasedCPU::ClockTick() {
     return;
 }
 
-HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, const std::string &trace_file)
+HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, const std::string &trace_file,
+                 const std::string &seg_file)
     : TraceBasedCPU(config_file, output_dir, trace_file,
                     std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1)),
     memory_system_local("configs/DDR4_4Gb_x4_1866.ini", output_dir + "/local",
                         std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1),
                         std::bind(&CPU::WriteCallBack, this, std::placeholders::_1)),
-    rob_sz(256 / memory_system_.GetTCK()){
+    rob_sz(256 / memory_system_.GetTCK()),
+    cur_seg(0,0){
 
-    std::cout<<rob_sz<<"\n";
     last_req_ns = 0;
     wait = rob.end();
     outstanding = 0;
@@ -117,6 +119,17 @@ HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, 
     max_outstanding = 0;
     kernel_trace_count = 0;
     app_trace_count = 0;
+
+    seg_file_.open(seg_file);
+    if (seg_file_.fail()) {
+        std::cerr << "Trace file does not exist" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
+    }
+    trace_id = 0;
+    if(!GetNextSeg()){
+        std::cerr << "Segment does not exist" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
+    }
 }
 
 void HMTTCPU::ClockTick() {
@@ -125,6 +138,7 @@ void HMTTCPU::ClockTick() {
     if(get_next_){
         if(!trace_file_.eof()){
             trace_file_ >> tmp;
+            trace_id++;
             get_next_ = false;
         }
     }
@@ -232,13 +246,26 @@ void HMTTCPU::PrintStats() {
     std::cout<<std::dec<<"wall clock: "<<wall_clk<<"\n";
     std::cout<<std::dec<<"kernel traces: "<<kernel_trace_count<<"\n";
     std::cout<<std::dec<<"app traces: "<<app_trace_count<<"\n";
-    //if(!trace_file_.eof()){
-//
-    //}
+    std::cout<<"System performance downgradation: "<<1.0 * (wall_clk - clk_) / clk_ * 100.0<<" %\n";
 }
 
 bool HMTTCPU::IsEnd() {
-    return trace_file_.eof() || ((kernel_trace_count + app_trace_count) > simulating);
+    if((kernel_trace_count + app_trace_count) > simulating){
+        if(!GetNextSeg())
+            return true;
+        else{
+            Drained();
+            PrintStats();
+            kernel_trace_count = 0;
+            app_trace_count = 0;
+            last_req_ns = 0;
+            outstanding = 0;
+            wall_clk = 0;
+            max_outstanding = 0;
+            WarmUp();
+        }
+    }
+    return false;
 }
 
 uint64_t HMTTCPU::GetTraceNum() {
@@ -250,9 +277,12 @@ uint64_t HMTTCPU::GetClk() {
 }
 
 void HMTTCPU::WarmUp() {
-    for (int i = 0; i < skipping; ++i) {
+    uint64_t mid = (cur_seg.sid + cur_seg.eid) / 2;
+    uint64_t s = mid - (simulating / 2);
+    for (; trace_id < s; ++trace_id) {
         trace_file_ >> tmp;
     }
+    std::cout<<std::dec<<"warming up to "<<trace_id<<"\n";
 }
 
 void HMTTCPU::Drained() {
@@ -260,5 +290,16 @@ void HMTTCPU::Drained() {
         memory_system_local.ClockTick();
         memory_system_.ClockTick();
     }
+}
+
+bool HMTTCPU::GetNextSeg() {
+    //select the proper segment
+    while(seg_file_>>cur_seg){
+        if(cur_seg.length() > simulating){
+            std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
+            return true;
+        }
+    }
+    return false;
 }
 }  // namespace dramsim3
