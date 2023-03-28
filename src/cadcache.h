@@ -5,6 +5,7 @@
 #ifndef DRAMSIM3_CADCACHE_H
 #define DRAMSIM3_CADCACHE_H
 
+#include <list>
 #include "common.h"
 #include "configuration.h"
 #include "controller.h"
@@ -15,6 +16,7 @@ namespace dramsim3{
 
 class RemoteRequest {
    public:
+    RemoteRequest(){};
     RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64_t exit_time_);
     uint64_t hex_addr;
     int sz; //number of 64B flits
@@ -41,6 +43,45 @@ class MemoryPool : public JedecDRAMSystem{
 
 };
 
+const std::unordered_map<std::string, uint64_t> BenchmarkInfo = {
+        {"ligra_bfs", 76914688},
+        {"memcached", 325341184},
+        {"hpcc", 1051770880},
+        {"wtdbg", 45912064},
+        {"hpcg", 139956224}
+};
+
+class Tag {
+    uint8_t tag;
+    bool valid;
+    bool dirty;
+public:
+    Tag(uint8_t tag_, bool valid_, bool dirty_): tag(tag_), valid(valid_), dirty(dirty_){}
+};
+
+class FrontEnd {
+    private:
+    std::string benchmark_name;
+    JedecDRAMSystem *cache_;
+    //friend class JedecDRAMSystem;
+    std::list<RemoteRequest> LSQ;
+    std::list<std::pair<uint64_t, uint64_t>> resp;
+    std::vector<Tag> Meta_SRAM;
+
+    public:
+    FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config);
+    bool GetReq(RemoteRequest &req);
+    bool AddTransaction(uint64_t hex_addr, bool is_write);
+    bool GetResp(uint64_t &req_id, uint64_t clk);
+    void Refill(uint64_t req_id, uint64_t clk);
+    void CacheReadCallBack(uint64_t req_id);
+    void CacheWriteCallBack(uint64_t req_id);
+};
+
+class KONAMethod : public FrontEnd{
+
+};
+
 class cadcache : public JedecDRAMSystem {
     private:
     const unsigned long remote_latency;   //RTT in cycles
@@ -49,6 +90,8 @@ class cadcache : public JedecDRAMSystem {
     std::vector<RemoteRequest> ethernet;
     std::vector<std::pair<uint64_t, uint64_t>> write_buffer;
     uint64_t egress_busy_clk;
+    FrontEnd *cache_controller;
+    std::function<void(uint64_t req_id)> read_callback_, write_callback_;
 
     void RemoteCallback(uint64_t req_id);
     uint64_t GetData(uint64_t caddr);
@@ -62,6 +105,7 @@ class cadcache : public JedecDRAMSystem {
                     std::function<void(uint64_t)> write_callback);
     ~cadcache(){
         delete remote_config_;
+        delete cache_controller;
     };
     bool WillAcceptTransaction(uint64_t hex_addr, bool is_write) const override;
     bool AddTransaction(uint64_t hex_addr, bool is_write) override;

@@ -95,6 +95,7 @@ class HMTTCPU : public TraceBasedCPU {
     std::ifstream seg_file_;
     seg cur_seg;
     uint64_t trace_id;
+    uint64_t segment_count;
     bool GetNextSeg();
     void Reset();
 

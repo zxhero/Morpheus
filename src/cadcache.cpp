@@ -13,31 +13,83 @@ RemoteRequest::RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64
     exit_time = exit_time_;
 }
 
+FrontEnd::FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config) {
+    benchmark_name = output_dir.substr(output_dir.find_last_of('/') + 1);
+    cache_ = cache;
+    int cache_line_num = 1 << (LogBase2(BenchmarkInfo.at(benchmark_name) * config.ratio / config.granularity));
+    Meta_SRAM.resize(cache_line_num, Tag(0, false, false));
+}
+
+bool FrontEnd::GetReq(RemoteRequest &req) {
+    if(!LSQ.empty()){
+        req = LSQ.front();
+        LSQ.erase(LSQ.begin());
+        return true;
+    }
+    return false;
+}
+
+void FrontEnd::CacheWriteCallBack(uint64_t req_id) {
+
+}
+
+void FrontEnd::CacheReadCallBack(uint64_t req_id) {
+
+}
+
+void FrontEnd::Refill(uint64_t req_id, uint64_t clk) {
+    resp.emplace_back(std::make_pair(req_id, clk + 1));
+}
+
+bool FrontEnd::GetResp(uint64_t &req_id, uint64_t clk) {
+    if(!resp.empty() && clk >= resp.front().second){
+        req_id = resp.front().first;
+        resp.erase(resp.begin());
+        return true;
+    }
+    return false;
+}
+
+bool FrontEnd::AddTransaction(uint64_t hex_addr, bool is_write) {
+    LSQ.emplace_back(RemoteRequest(is_write, hex_addr, 1, 1));
+    return true;
+}
+
 cadcache::cadcache(Config &config, const std::string &config_str, const std::string &output_dir,
                    std::function<void (uint64_t)> read_callback,
                    std::function<void (uint64_t)> write_callback)
                    : JedecDRAMSystem(config, output_dir, read_callback, write_callback),
+                   //cache_controller(output_dir, const_cast<JedecDRAMSystem*>(this), config),
                    remote_latency(static_cast<unsigned long>((double)config_.rtt / config_.tCK)),
                    remote_config_(new Config(config_str, output_dir + "/remote")),
                    remote_memory(*(remote_config_),
                                  output_dir + "/remote",
                                  std::bind(&cadcache::RemoteCallback, this, std::placeholders::_1),
-                                 std::bind(&cadcache::RemoteCallback, this, std::placeholders::_1))
+                                 nullptr)
                    {
-    std::cout<<"cadcache construct\n";
+    std::cout<<"cadcache construct "<<output_dir.substr(output_dir.find_last_of('/') + 1)<<"\n";
+    cache_controller = new FrontEnd(output_dir, this, config);
+    JedecDRAMSystem::RegisterCallbacks(
+            std::bind(&FrontEnd::CacheReadCallBack, cache_controller, std::placeholders::_1),
+            std::bind(&FrontEnd::CacheWriteCallBack, cache_controller, std::placeholders::_1)
+            );
+    read_callback_ = read_callback;
+    write_callback_ = write_callback;
 };
 
 bool cadcache::AddTransaction(uint64_t hex_addr, bool is_write) {
+    cache_controller->AddTransaction(hex_addr, is_write);
+
     if(egress_busy_clk < clk_){
         egress_busy_clk = clk_;
     }
-    RemoteRequest req(
-            is_write, hex_addr, 1, egress_busy_clk+remote_latency+1
-            );
-
-    ethernet.push_back(req);
-    egress_busy_clk += 1;
-
+    //TODO: set proper sz.
+    RemoteRequest req;
+    if(cache_controller->GetReq(req)){
+        req.exit_time += egress_busy_clk + remote_latency + 1;
+        ethernet.push_back(req);
+        egress_busy_clk += 1;
+    }
     //std::cout<<"req: "<<req.hex_addr<<" "<<req.exit_time<<"\n";
 
     if(is_write){
@@ -64,12 +116,17 @@ void cadcache::ClockTick() {
         write_buffer.erase(write_buffer.begin());
     }
 
+    uint64_t req_id;
+    if(cache_controller->GetResp(req_id, clk_)){
+        read_callback_(req_id);
+    }
+
     JedecDRAMSystem::ClockTick();
     remote_memory.ClockTick();
 }
 
 void cadcache::RemoteCallback(uint64_t req_id) {
-    read_callback_(req_id);
+    cache_controller->Refill(req_id, clk_);
 }
 
 void cadcache::PrintStats() {
@@ -133,6 +190,7 @@ void MemoryPool::MediaCallback(uint64_t req_id) {
             delete pending_reqs[req_id];
             pending_reqs.erase(req_id);
         }
+        pending_reqs.erase(req_id);
     }
 }
 

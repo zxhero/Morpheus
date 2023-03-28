@@ -123,6 +123,8 @@ class Config {
 
     // memory pool
     int rtt;
+    double ratio;
+    int granularity;
 
     // System
     std::string address_mapping;

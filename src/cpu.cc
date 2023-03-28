@@ -126,6 +126,7 @@ HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, 
         AbruptExit(__FILE__, __LINE__);
     }
     trace_id = 0;
+    segment_count = 0;
     if(!GetNextSeg()){
         std::cerr << "Segment does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -302,9 +303,10 @@ void HMTTCPU::Drained() {
 
 bool HMTTCPU::GetNextSeg() {
     //select the proper segment
-    while(seg_file_>>cur_seg){
+    while(seg_file_>>cur_seg && segment_count < 5){
         if(cur_seg.length() > simulating && cur_seg.length() > 10000000){
             std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
+            segment_count ++;
             return true;
         }
     }
