@@ -123,6 +123,7 @@ class Config {
 
     // memory pool
     int rtt;
+    int bw;     //Gbps
     double ratio;
     int granularity;
 

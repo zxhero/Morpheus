@@ -116,6 +116,7 @@ void Config::InitDRAMParams() {
     xbar_queue_depth = GetInteger("hmc", "xbar_queue_depth", 16);
     //memory pool specific parameters
     rtt = GetInteger("memory_pool", "RTT", 1500); //ns
+    bw = GetInteger("memory_pool", "LinkBW", 100);  //Gbps
     granularity = GetInteger("memory_pool", "Granularity", 64);
     ratio = reader.GetReal("memory_pool", "Ratio", 0.2);
 

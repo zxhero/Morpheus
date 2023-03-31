@@ -37,12 +37,12 @@ void FrontEnd::CacheReadCallBack(uint64_t req_id) {
 
 }
 
-void FrontEnd::Refill(uint64_t req_id, uint64_t clk) {
-    resp.emplace_back(std::make_pair(req_id, clk + 1));
+void FrontEnd::Refill(uint64_t req_id) {
+    resp.emplace_back(std::make_pair(req_id, cache_->clk_ + 1));
 }
 
-bool FrontEnd::GetResp(uint64_t &req_id, uint64_t clk) {
-    if(!resp.empty() && clk >= resp.front().second){
+bool FrontEnd::GetResp(uint64_t &req_id) {
+    if(!resp.empty() && cache_->clk_ >= resp.front().second){
         req_id = resp.front().first;
         resp.erase(resp.begin());
         return true;
@@ -50,9 +50,29 @@ bool FrontEnd::GetResp(uint64_t &req_id, uint64_t clk) {
     return false;
 }
 
+void FrontEnd::Drained() {
+    if(!front_q.empty()){
+        LSQ.emplace_back(RemoteRequest(front_q.front().second,
+                                       front_q.front().first,
+                                       1,
+                                       1));
+        front_q.erase(front_q.begin());
+    }
+}
+
+void FrontEnd::WarmUp(uint64_t hex_addr, bool is_write) {
+    return;
+}
+
 bool FrontEnd::AddTransaction(uint64_t hex_addr, bool is_write) {
-    LSQ.emplace_back(RemoteRequest(is_write, hex_addr, 1, 1));
+    front_q.emplace_back(std::make_pair(hex_addr, is_write));
     return true;
+}
+
+bool FrontEnd::WillAcceptTransaction(uint64_t hex_addr, bool is_write) const {
+    if(front_q.size() < queue_capacity)
+        return true;
+    return false;
 }
 
 cadcache::cadcache(Config &config, const std::string &config_str, const std::string &output_dir,
@@ -61,6 +81,7 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
                    : JedecDRAMSystem(config, output_dir, read_callback, write_callback),
                    //cache_controller(output_dir, const_cast<JedecDRAMSystem*>(this), config),
                    remote_latency(static_cast<unsigned long>((double)config_.rtt / config_.tCK)),
+                   ethernet_capacity(config_.rtt * config_.bw / 8 / 64),
                    remote_config_(new Config(config_str, output_dir + "/remote")),
                    remote_memory(*(remote_config_),
                                  output_dir + "/remote",
@@ -75,22 +96,12 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
             );
     read_callback_ = read_callback;
     write_callback_ = write_callback;
+    ethernet_sz = 0;
+    max_ethernet_sz = 0;
 };
 
 bool cadcache::AddTransaction(uint64_t hex_addr, bool is_write) {
     cache_controller->AddTransaction(hex_addr, is_write);
-
-    if(egress_busy_clk < clk_){
-        egress_busy_clk = clk_;
-    }
-    //TODO: set proper sz.
-    RemoteRequest req;
-    if(cache_controller->GetReq(req)){
-        req.exit_time += egress_busy_clk + remote_latency + 1;
-        ethernet.push_back(req);
-        egress_busy_clk += 1;
-    }
-    //std::cout<<"req: "<<req.hex_addr<<" "<<req.exit_time<<"\n";
 
     if(is_write){
         write_buffer.emplace_back(hex_addr, clk_ + 1);
@@ -99,14 +110,31 @@ bool cadcache::AddTransaction(uint64_t hex_addr, bool is_write) {
 }
 
 bool cadcache::WillAcceptTransaction(uint64_t hex_addr, bool is_write) const {
-    return true;
+    return cache_controller->WillAcceptTransaction(hex_addr, is_write);
 }
 
 void cadcache::ClockTick() {
+    if(egress_busy_clk < clk_){
+        egress_busy_clk = clk_;
+    }
+    //TODO: set proper sz.
+    if(req_.sz == 0)
+        cache_controller->GetReq(req_);
+    if(req_.sz != 0 && ethernet_sz + req_.sz < ethernet_capacity){
+        req_.exit_time += egress_busy_clk + remote_latency + req_.sz;
+        ethernet.push_back(req_);
+        egress_busy_clk += req_.sz;
+        ethernet_sz += req_.sz;
+        if(ethernet_sz > max_ethernet_sz){
+            max_ethernet_sz = ethernet_sz;
+        }
+        req_.sz = 0;
+    }
 
     if(! ethernet.empty() && ethernet[0].exit_time <= clk_){
         if(remote_memory.WillAcceptTransaction(ethernet[0])){
             remote_memory.AddTransaction(ethernet[0]);
+            ethernet_sz -= ethernet[0].sz;
             ethernet.erase(ethernet.begin());
         }
     }
@@ -117,22 +145,28 @@ void cadcache::ClockTick() {
     }
 
     uint64_t req_id;
-    if(cache_controller->GetResp(req_id, clk_)){
+    if(cache_controller->GetResp(req_id)){
         read_callback_(req_id);
     }
 
     JedecDRAMSystem::ClockTick();
     remote_memory.ClockTick();
+    cache_controller->Drained();
+}
+
+void cadcache::WarmUp(uint64_t hex_addr, bool is_write) {
+    cache_controller->WarmUp(hex_addr, is_write);
 }
 
 void cadcache::RemoteCallback(uint64_t req_id) {
-    cache_controller->Refill(req_id, clk_);
+    cache_controller->Refill(req_id);
 }
 
 void cadcache::PrintStats() {
     //std::ofstream json_out(config_.json_stats_name, std::ofstream::out);
     //json_out << "DRAM Cache: \n";
     //json_out.close();
+    std::cout<<"max ethernet outstanding: "<<std::dec<<max_ethernet_sz<<"\n";
     JedecDRAMSystem::PrintStats();
 
     //json_out.open(config_.json_stats_name, std::ofstream::app);
@@ -188,7 +222,6 @@ void MemoryPool::MediaCallback(uint64_t req_id) {
                 read_callback_(pending_reqs[req_id]->first.hex_addr);
             }
             delete pending_reqs[req_id];
-            pending_reqs.erase(req_id);
         }
         pending_reqs.erase(req_id);
     }

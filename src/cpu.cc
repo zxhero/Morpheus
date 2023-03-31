@@ -289,6 +289,8 @@ void HMTTCPU::WarmUp() {
     uint64_t s = mid - (simulating / 2);
     for (; trace_id < s; ++trace_id) {
         trace_file_ >> tmp;
+        if(!tmp.is_kernel)
+            memory_system_.WarmUp(tmp.addr, tmp.r_w == 0);
     }
     std::cout<<std::dec<<"warming up to "<<trace_id<<"\n";
 }
@@ -303,7 +305,7 @@ void HMTTCPU::Drained() {
 
 bool HMTTCPU::GetNextSeg() {
     //select the proper segment
-    while(seg_file_>>cur_seg && segment_count < 5){
+    while(seg_file_>>cur_seg && segment_count < 1){
         if(cur_seg.length() > simulating && cur_seg.length() > 10000000){
             std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
             segment_count ++;

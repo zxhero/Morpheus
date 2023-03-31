@@ -58,6 +58,12 @@ MemorySystem* GetMemorySystem(const std::string &config_file, const std::string 
                  std::function<void(uint64_t)> write_callback) {
     return new MemorySystem(config_file, output_dir, read_callback, write_callback);
 }
+
+void MemorySystem::WarmUp(uint64_t hex_addr, bool is_write) {
+    if (config_->protocol == DRAMProtocol::MEMPOOL){
+        dynamic_cast<cadcache*>(dram_system_)->WarmUp(hex_addr, is_write);
+    }
+}
 }  // namespace dramsim3
 
 // This function can be used by autoconf AC_CHECK_LIB since

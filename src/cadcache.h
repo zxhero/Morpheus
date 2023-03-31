@@ -61,21 +61,26 @@ public:
 
 class FrontEnd {
     private:
+    const uint64_t queue_capacity = 64;
     std::string benchmark_name;
     JedecDRAMSystem *cache_;
     //friend class JedecDRAMSystem;
     std::list<RemoteRequest> LSQ;
     std::list<std::pair<uint64_t, uint64_t>> resp;
     std::vector<Tag> Meta_SRAM;
+    std::list<std::pair<uint64_t, bool>> front_q;
 
     public:
     FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config);
     bool GetReq(RemoteRequest &req);
     bool AddTransaction(uint64_t hex_addr, bool is_write);
-    bool GetResp(uint64_t &req_id, uint64_t clk);
-    void Refill(uint64_t req_id, uint64_t clk);
+    bool WillAcceptTransaction(uint64_t hex_addr, bool is_write) const;
+    bool GetResp(uint64_t &req_id);
+    void Refill(uint64_t req_id);
     void CacheReadCallBack(uint64_t req_id);
     void CacheWriteCallBack(uint64_t req_id);
+    void Drained();
+    void WarmUp(uint64_t hex_addr, bool is_write);
 };
 
 class KONAMethod : public FrontEnd{
@@ -85,13 +90,17 @@ class KONAMethod : public FrontEnd{
 class cadcache : public JedecDRAMSystem {
     private:
     const unsigned long remote_latency;   //RTT in cycles
+    const uint64_t ethernet_capacity;
     Config* remote_config_;
     MemoryPool remote_memory;
     std::vector<RemoteRequest> ethernet;
+    uint64_t ethernet_sz;
+    uint64_t max_ethernet_sz;
     std::vector<std::pair<uint64_t, uint64_t>> write_buffer;
     uint64_t egress_busy_clk;
     FrontEnd *cache_controller;
     std::function<void(uint64_t req_id)> read_callback_, write_callback_;
+    RemoteRequest req_;
 
     void RemoteCallback(uint64_t req_id);
     uint64_t GetData(uint64_t caddr);
@@ -112,6 +121,7 @@ class cadcache : public JedecDRAMSystem {
     void ClockTick() override;
     void PrintStats() override;
     void ResetStats() override;
+    void WarmUp(uint64_t hex_addr, bool is_write);
 };
 
 }
