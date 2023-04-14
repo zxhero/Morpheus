@@ -74,14 +74,14 @@ int main(int argc, const char **argv) {
     for (uint64_t clk = 0; clk < cycles && (!dynamic_cast<HMTTCPU*>(cpu)->IsEnd()); clk++) {
         cpu->ClockTick();
         if(clk % 1000000 == 0){
-            std::cout<<"processing "<<clk<<" clks and "<<dynamic_cast<HMTTCPU*>(cpu)->GetTraceNum()<<" traces "
+            std::cout<<"processing "<<std::dec<<clk<<" clks and "<<dynamic_cast<HMTTCPU*>(cpu)->GetTraceNum()<<" traces "
             <<dynamic_cast<HMTTCPU*>(cpu)->GetClk()<<" wall clks\n"<<std::flush;
         }
     }
     dynamic_cast<HMTTCPU*>(cpu)->Drained();
     cpu->PrintStats();
 
-    delete cpu;
+    delete dynamic_cast<HMTTCPU*>(cpu);
 
     return 0;
 }

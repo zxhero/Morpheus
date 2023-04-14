@@ -104,7 +104,7 @@ void TraceBasedCPU::ClockTick() {
 
 HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, const std::string &trace_file,
                  const std::string &seg_file)
-    : TraceBasedCPU(config_file, output_dir, trace_file,
+    : CPU(config_file, output_dir,
                     std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1)),
     memory_system_local("configs/DDR4_4Gb_x4_1866.ini", output_dir + "/local",
                         std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1),
@@ -131,14 +131,17 @@ HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, 
         std::cerr << "Segment does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
+
+    trace_init((trace_file+".trace").c_str(), (trace_file+".kt").c_str());
+    tmp.valid = true;
 }
 
 void HMTTCPU::ClockTick() {
     memory_system_.ClockTick();
     memory_system_local.ClockTick();
     if(get_next_){
-        if(!trace_file_.eof()){
-            trace_file_ >> tmp;
+        if(tmp.valid){
+            GetNextHMTT(tmp, cur_seg.pid, cur_seg.process_num);
             trace_id++;
             get_next_ = false;
             //std::cout<<"["<<std::dec<<kernel_trace_count + app_trace_count<<"]: "<<tmp.added_ns
@@ -221,7 +224,7 @@ void HMTTCPU::ClockTick() {
     }
 
 
-    if(!trace_file_.eof())
+    if(tmp.valid)
         wall_clk ++;
 }
 
@@ -288,7 +291,7 @@ void HMTTCPU::WarmUp() {
     uint64_t mid = (cur_seg.sid + cur_seg.eid) / 2;
     uint64_t s = mid - (simulating / 2);
     for (; trace_id < s; ++trace_id) {
-        trace_file_ >> tmp;
+        GetNextHMTT(tmp, cur_seg.pid, cur_seg.process_num);
         if(!tmp.is_kernel)
             memory_system_.WarmUp(tmp.addr, tmp.r_w == 0);
     }
@@ -305,7 +308,7 @@ void HMTTCPU::Drained() {
 
 bool HMTTCPU::GetNextSeg() {
     //select the proper segment
-    while(seg_file_>>cur_seg && segment_count < 1){
+    while(seg_file_>>cur_seg){
         if(cur_seg.length() > simulating && cur_seg.length() > 10000000){
             std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
             segment_count ++;

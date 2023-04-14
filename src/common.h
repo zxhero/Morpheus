@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <iostream>
 #include <vector>
+#include "trace.h"
 
 namespace dramsim3 {
 
@@ -130,13 +131,16 @@ struct HMTTTransaction {
     uint64_t addr;
     uint64_t added_ns;
     uint64_t issued_clk;
+    uint64_t vaddr;
+    int pid;
     bool valid;
     bool is_kernel;
     bool is_finished;
 
     friend std::ostream& operator<<(std::ostream& os, const HMTTTransaction& trans);
-    friend std::istream& operator>>(std::istream& is, HMTTTransaction& trans);
 };
+
+void GetNextHMTT(HMTTTransaction &trans, int ppid, uint64_t num_p);
 
 }  // namespace dramsim3
 #endif

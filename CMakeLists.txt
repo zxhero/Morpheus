@@ -40,7 +40,9 @@ add_library(dramsim3 SHARED
     src/timing.cc
     src/memory_system.cc
     src/cadcache.cpp
-        src/trace_seg.cpp)
+        src/trace_seg.cpp
+        src/policy/direct_map.cpp
+        src/trace.cpp)
 
 if (THERMAL)
     # dependency check

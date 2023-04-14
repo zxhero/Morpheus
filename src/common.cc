@@ -47,41 +47,27 @@ std::ostream& operator<<(std::ostream& os, const HMTTTransaction& trans){
     return os;
 }
 
-std::istream& operator>>(std::istream& is, HMTTTransaction& trans){
-    uint64_t buffer = 0;
-    uint64_t invalid_count = 0;
+static uint64_t last_clk = 0;
 
-    while(1){
-        is.read(reinterpret_cast<char*>(&buffer), 6);
-        trans.seq_no = (unsigned int) ((buffer >> 40) & 0xffU);
-        unsigned long long timer  = (unsigned long long)((buffer >> 32) & 0xffULL);
-        trans.r_w    = (unsigned int)((buffer >> 31) & 0x1U);
-        trans.addr   = (unsigned long)(buffer & 0x7fffffffUL);
-        trans.addr   = (unsigned long)(trans.addr << 6);
-        //print(tmp);
-        if (trans.addr == 0 && timer == 0) {
-            invalid_count++;
-        }
-        else {
-            timer += invalid_count * 256;
-            trans.added_ns = timer * 5; //200MHz
-            trans.valid = true;
-            if(trans.addr >= (2ULL << 30)) {
-                trans.addr += (2ULL << 30);
-                trans.is_kernel = false;
-            }else{
-                trans.is_kernel = true;
-            }
-            //::cout<<trans.added_ns<<" "<<std::hex<<trans.addr<<(trans.is_kernel ? " kernel" : " app")
-            //<<(trans.r_w ? " Read": " Write")<<"\n"<<std::dec;
-            return is;
-        }
-
-        if(is.eof()){
+void GetNextHMTT(HMTTTransaction &trans, int ppid, uint64_t num_p){
+    do{
+        if(next_translate() == 0){
             trans.valid = false;
-            return is;
+        }else{
+            trans.valid = true;
         }
-    }
+
+        trans.addr = record.paddr;
+        trans.r_w = record.rw;
+        trans.is_kernel = record.vaddr == 0 && record.pid == -1;
+        trans.vaddr = record.vaddr;
+        trans.added_ns = (record.tm - last_clk) * 5;   //200MHz
+        trans.pid = record.pid;
+    }while(trans.valid &&
+            (trans.pid < ppid || trans.pid >= (ppid + num_p)) &&
+            !trans.is_kernel);
+
+    last_clk = record.tm;
 }
 
 int GetBitInPos(uint64_t bits, int pos) {

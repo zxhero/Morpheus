@@ -77,7 +77,7 @@ class TraceBasedCPU : public CPU {
     bool get_next_ = true;
 };
 
-class HMTTCPU : public TraceBasedCPU {
+class HMTTCPU : public CPU {
    private:
     const int rob_sz ;
     const int mshr_sz = 64;
@@ -90,6 +90,7 @@ class HMTTCPU : public TraceBasedCPU {
     std::list<HMTTTransaction>::iterator wait;
     uint64_t outstanding;
     MemorySystem memory_system_local;
+    bool get_next_ = true;
 
     //Global variables
     std::ifstream seg_file_;
@@ -109,7 +110,7 @@ class HMTTCPU : public TraceBasedCPU {
    public:
     HMTTCPU(const std::string& config_file, const std::string& output_dir,
                   const std::string& trace_file, const std::string &seg_file);
-    ~HMTTCPU() {seg_file_.close();};
+    ~HMTTCPU() {seg_file_.close(); trace_finish(); std::cout<<"destory HMTTCPU\n";};
     void ClockTick() override;
     void ReadCallBack(uint64_t addr) override;
     void PrintStats() override;
