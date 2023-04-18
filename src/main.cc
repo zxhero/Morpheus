@@ -56,32 +56,27 @@ int main(int argc, const char **argv) {
     std::string seg_file = args::get(seg_file_arg);
 
 
-    CPU *cpu;
+    HMTTCPU *cpu;
     if(!trace_file.empty() && !seg_file.empty()){
         std::cout<<seg_file<<"\n";
         cpu = new HMTTCPU(config_file, output_dir, trace_file, seg_file);
-    } else if (!trace_file.empty()) {
-        cpu = new TraceBasedCPU(config_file, output_dir, trace_file);
     } else {
-        if (stream_type == "stream" || stream_type == "s") {
-            cpu = new StreamCPU(config_file, output_dir);
-        } else {
-            cpu = new RandomCPU(config_file, output_dir);
-        }
+        std::cerr << "Trace file and segment file does not provided" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
     }
 
-    dynamic_cast<HMTTCPU*>(cpu)->WarmUp();
-    for (uint64_t clk = 0; clk < cycles && (!dynamic_cast<HMTTCPU*>(cpu)->IsEnd()); clk++) {
+    cpu->WarmUp();
+    for (uint64_t clk = 0; clk < cycles && (!(cpu)->IsEnd()); clk++) {
         cpu->ClockTick();
         if(clk % 1000000 == 0){
-            std::cout<<"processing "<<std::dec<<clk<<" clks and "<<dynamic_cast<HMTTCPU*>(cpu)->GetTraceNum()<<" traces "
-            <<dynamic_cast<HMTTCPU*>(cpu)->GetClk()<<" wall clks\n"<<std::flush;
+            std::cout<<"processing "<<std::dec<<clk<<" clks and "<<(cpu)->GetTraceNum()<<" traces "
+            <<(cpu)->GetClk()<<" wall clks\n"<<std::flush;
         }
     }
-    dynamic_cast<HMTTCPU*>(cpu)->Drained();
+    (cpu)->Drained();
     cpu->PrintStats();
 
-    delete dynamic_cast<HMTTCPU*>(cpu);
+    delete (cpu);
 
     return 0;
 }

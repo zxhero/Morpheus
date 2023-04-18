@@ -215,6 +215,10 @@ void Controller::ScheduleTransaction() {
                 // Enforce R->W dependency
                 if (pending_rd_q_.count(it->addr) > 0) {
                     write_draining_ = 0;
+                    if(write_buffer_.size() >= write_buffer_.capacity()) {
+                        std::cerr<<"stuck here\n";
+                        AbruptExit(__FILE__, __LINE__);
+                    }
                     break;
                 }
                 write_draining_ -= 1;

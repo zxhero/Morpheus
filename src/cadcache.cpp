@@ -6,6 +6,43 @@
 
 namespace dramsim3{
 
+template<class pktType>
+Ethernet<pktType>::Ethernet(Config &config):
+        remote_latency(static_cast<unsigned long>((double)config.rtt / config.tCK)),
+        bandwidth(512 / config.bw / config.tCK){
+    egress_busy_clk = 0;
+}
+
+template<class pktType>
+bool Ethernet<pktType>::AddTransaction(pktType req, uint64_t clk, uint64_t req_sz) {
+    if(egress_busy_clk < clk){
+        egress_busy_clk = clk;
+    }
+
+    {
+        uint64_t exit_time = egress_busy_clk + remote_latency + req_sz * bandwidth;
+        struct pkt tmp{.data = req, .sz = req_sz, .exit_time=exit_time};
+        ethernet.push_back(tmp);
+        egress_busy_clk += (req_sz * bandwidth);
+        return true;
+    }
+
+    return false;
+}
+
+template<class pktType>
+bool Ethernet<pktType>::GetReq(pktType &req, uint64_t clk) {
+    if(! ethernet.empty() && ethernet.front().exit_time <= clk){
+        req = ethernet.front().data;
+        ethernet.erase(ethernet.begin());
+        return true;
+    }
+    return false;
+}
+
+template<class pktType>
+void Ethernet<pktType>::PrintStat() {}
+
 RemoteRequest::RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64_t exit_time_) {
     is_write = is_write_;
     hex_addr = hex_addr_;
@@ -79,14 +116,12 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
                    std::function<void (uint64_t)> read_callback,
                    std::function<void (uint64_t)> write_callback)
                    : JedecDRAMSystem(config, output_dir, read_callback, write_callback),
-                   //cache_controller(output_dir, const_cast<JedecDRAMSystem*>(this), config),
-                   remote_latency(static_cast<unsigned long>((double)config_.rtt / config_.tCK)),
-                   ethernet_capacity(config_.rtt * config_.bw / 8 / 64),
                    remote_config_(new Config(config_str, output_dir + "/remote")),
                    remote_memory(*(remote_config_),
                                  output_dir + "/remote",
                                  std::bind(&cadcache::RemoteCallback, this, std::placeholders::_1),
-                                 nullptr)
+                                 nullptr),
+                   egress_link(config)
                    {
     std::cout<<"cadcache construct "<<output_dir.substr(output_dir.find_last_of('/') + 1)<<"\n";
     cache_controller = new FrontEnd(output_dir, this, config);
@@ -96,8 +131,6 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
             );
     read_callback_ = read_callback;
     write_callback_ = write_callback;
-    ethernet_sz = 0;
-    max_ethernet_sz = 0;
 };
 
 bool cadcache::AddTransaction(uint64_t hex_addr, bool is_write) {
@@ -114,28 +147,26 @@ bool cadcache::WillAcceptTransaction(uint64_t hex_addr, bool is_write) const {
 }
 
 void cadcache::ClockTick() {
-    if(egress_busy_clk < clk_){
-        egress_busy_clk = clk_;
-    }
     //TODO: set proper sz.
     if(req_.sz == 0)
         cache_controller->GetReq(req_);
-    if(req_.sz != 0 && ethernet_sz + req_.sz < ethernet_capacity){
-        req_.exit_time += egress_busy_clk + remote_latency + req_.sz;
-        ethernet.push_back(req_);
-        egress_busy_clk += req_.sz;
-        ethernet_sz += req_.sz;
-        if(ethernet_sz > max_ethernet_sz){
-            max_ethernet_sz = ethernet_sz;
-        }
-        req_.sz = 0;
+
+    uint64_t req_sz = 0;
+    if(req_.sz != 0)
+        req_sz = req_.is_write ? req_.sz : 1;
+
+    if(req_sz != 0){
+        if(egress_link.AddTransaction(req_, clk_, req_sz))
+            req_.sz = 0;
     }
 
-    if(! ethernet.empty() && ethernet[0].exit_time <= clk_){
-        if(remote_memory.WillAcceptTransaction(ethernet[0])){
-            remote_memory.AddTransaction(ethernet[0]);
-            ethernet_sz -= ethernet[0].sz;
-            ethernet.erase(ethernet.begin());
+    RemoteRequest tmp;
+    if(egress_link.GetReq(tmp, clk_)){
+        if(remote_memory.WillAcceptTransaction(tmp)){
+            remote_memory.AddTransaction(tmp);
+        }else{
+            std::cerr<<" remote memory must accept \n";
+            AbruptExit(__FILE__, __LINE__);
         }
     }
 
@@ -166,7 +197,8 @@ void cadcache::PrintStats() {
     //std::ofstream json_out(config_.json_stats_name, std::ofstream::out);
     //json_out << "DRAM Cache: \n";
     //json_out.close();
-    std::cout<<"max ethernet outstanding: "<<std::dec<<max_ethernet_sz<<"\n";
+    egress_link.PrintStat();
+    cache_controller->PrintStat();
     JedecDRAMSystem::PrintStats();
 
     //json_out.open(config_.json_stats_name, std::ofstream::app);
@@ -185,16 +217,33 @@ MemoryPool::MemoryPool(Config &config, const std::string &output_dir,
                        std::function<void (uint64_t)> write_callback)
                        :JedecDRAMSystem(config, output_dir,
                                         std::bind(&MemoryPool::MediaCallback, this, std::placeholders::_1),
-                                        std::bind(&MemoryPool::MediaCallback, this, std::placeholders::_1)){
+                                        std::bind(&MemoryPool::MediaCallback, this, std::placeholders::_1)),
+                       egress_link(config){
     read_callback_ = read_callback;
     write_callback_ = write_callback;
 }
 
 void MemoryPool::ClockTick() {
+    uint64_t req_id;
+    if(egress_link.GetReq(req_id, clk_)){
+        read_callback_(req_id);
+    }
+
     if(! flits_issue.empty()){
-        if(JedecDRAMSystem::WillAcceptTransaction(flits_issue[0].first, flits_issue[0].second)){
-            JedecDRAMSystem::AddTransaction(flits_issue[0].first, flits_issue[0].second);
-            flits_issue.erase(flits_issue.begin());
+        uint64_t index = flits_issue.front().second;
+        uint64_t hex_addr = flits_issue.front().first->first.hex_addr + index * 64;
+        //kept WAR order
+        if(pending_reqs.find(hex_addr) == pending_reqs.end()
+            && JedecDRAMSystem::WillAcceptTransaction(hex_addr,
+                                                      flits_issue.front().first->first.is_write)){
+            JedecDRAMSystem::AddTransaction(hex_addr, flits_issue.front().first->first.is_write);
+            index++;
+            pending_reqs[hex_addr] = flits_issue.front().first;
+            if(index == flits_issue.front().first->first.sz){
+                flits_issue.erase(flits_issue.begin());
+            }else{
+                flits_issue.front().second = index;
+            }
         }
     }
 
@@ -207,10 +256,7 @@ bool MemoryPool::WillAcceptTransaction(RemoteRequest req) {
 
 bool MemoryPool::AddTransaction(RemoteRequest req) {
     std::pair<RemoteRequest, int>* tmp = new std::pair<RemoteRequest, int>(req, req.sz);
-    for (int i = 0; i < req.sz; ++i) {
-        flits_issue.push_back(std::make_pair(req.hex_addr + i * 64, req.is_write));
-        pending_reqs[req.hex_addr + i * 64] = tmp;
-    }
+    flits_issue.push_back(std::make_pair(tmp, 0));
     return true;
 }
 
@@ -219,7 +265,8 @@ void MemoryPool::MediaCallback(uint64_t req_id) {
         pending_reqs[req_id]->second--;
         if(pending_reqs[req_id]->second == 0){
             if(pending_reqs[req_id]->first.is_write == false){
-                read_callback_(pending_reqs[req_id]->first.hex_addr);
+                egress_link.AddTransaction(pending_reqs[req_id]->first.hex_addr, clk_,
+                                           pending_reqs[req_id]->first.sz);
             }
             delete pending_reqs[req_id];
         }

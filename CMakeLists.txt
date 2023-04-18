@@ -25,6 +25,10 @@ target_include_directories(args INTERFACE ext/headers)
 add_library(json INTERFACE)
 target_include_directories(json INTERFACE ext/headers)
 
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_definitions("-g -ggdb")
+endif()
+
 # Main DRAMSim Lib
 add_library(dramsim3 SHARED
     src/bankstate.cc

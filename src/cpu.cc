@@ -119,6 +119,7 @@ HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, 
     max_outstanding = 0;
     kernel_trace_count = 0;
     app_trace_count = 0;
+    read_latency.clear();
 
     seg_file_.open(seg_file);
     if (seg_file_.fail()) {
@@ -238,9 +239,9 @@ void HMTTCPU::ReadCallBack(uint64_t addr) {
     if(res->r_w){
         uint64_t latency = wall_clk - res->issued_clk;
         if(read_latency.find(latency) == read_latency.end()){
-            read_latency[latency] ++;
-        }else{
             read_latency[latency] = 1;
+        }else{
+            read_latency[latency] ++;
         }
     }
 
