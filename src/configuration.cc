@@ -119,6 +119,9 @@ void Config::InitDRAMParams() {
     bw = GetInteger("memory_pool", "LinkBW", 100);  //Gbps
     granularity = GetInteger("memory_pool", "Granularity", 64);
     ratio = reader.GetReal("memory_pool", "Ratio", 0.2);
+    std::map<std::string, Policy> policy_pairs = {
+        {"Direct", Policy::DirectMapped},     {"Dummy", Policy::Dummy}};
+    cache_policy = policy_pairs[reader.Get("memory_pool", "policy", "Dummy")];
 
     if (IsHMC()) {
         // the BL for HMC is determined by max block_size, which is a multiple

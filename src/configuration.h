@@ -32,6 +32,12 @@ enum class RefreshPolicy {
     SIZE 
 };
 
+enum class Policy{
+    Dummy,
+    DirectMapped,
+    SIZE
+};
+
 class Config {
    public:
     Config(std::string config_file, std::string out_dir);
@@ -126,6 +132,7 @@ class Config {
     int bw;     //Gbps
     double ratio;
     int granularity;
+    Policy cache_policy;
 
     // System
     std::string address_mapping;

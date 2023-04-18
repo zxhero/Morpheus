@@ -3,6 +3,7 @@
 //
 
 #include "cadcache.h"
+#include "policy/direct_map.h"
 
 namespace dramsim3{
 
@@ -50,11 +51,20 @@ RemoteRequest::RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64
     exit_time = exit_time_;
 }
 
-FrontEnd::FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config) {
-    benchmark_name = output_dir.substr(output_dir.find_last_of('/') + 1);
+Tag::Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity)
+: tag(tag_), valid(valid_), dirty(dirty_){
+    accessed.resize(granularity/256, false);
+}
+
+int Tag::utilized() {
+    return std::count(accessed.begin(), accessed.end(), true);
+}
+
+FrontEnd::FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config):
+    benchmark_name(output_dir.substr(output_dir.find_last_of('/') + 1)){
     cache_ = cache;
     int cache_line_num = 1 << (LogBase2(BenchmarkInfo.at(benchmark_name) * config.ratio / config.granularity));
-    Meta_SRAM.resize(cache_line_num, Tag(0, false, false));
+    Meta_SRAM.resize(cache_line_num, Tag(0, false, false,config.granularity));
 }
 
 bool FrontEnd::GetReq(RemoteRequest &req) {
@@ -124,7 +134,10 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
                    egress_link(config)
                    {
     std::cout<<"cadcache construct "<<output_dir.substr(output_dir.find_last_of('/') + 1)<<"\n";
-    cache_controller = new FrontEnd(output_dir, this, config);
+    if(config_.cache_policy == Policy::Dummy)
+        cache_controller = new FrontEnd(output_dir, this, config);
+    else if(config_.cache_policy == Policy::DirectMapped)
+        cache_controller = new DirectMap(output_dir, this, config);
     JedecDRAMSystem::RegisterCallbacks(
             std::bind(&FrontEnd::CacheReadCallBack, cache_controller, std::placeholders::_1),
             std::bind(&FrontEnd::CacheWriteCallBack, cache_controller, std::placeholders::_1)
@@ -208,8 +221,7 @@ void cadcache::PrintStats() {
 }
 
 void cadcache::ResetStats() {
-    JedecDRAMSystem::ResetStats();
-    remote_memory.ResetStats();
+    cache_controller->ResetStat();
 }
 
 MemoryPool::MemoryPool(Config &config, const std::string &output_dir,

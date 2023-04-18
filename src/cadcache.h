@@ -85,17 +85,19 @@ const std::unordered_map<std::string, uint64_t> BenchmarkInfo = {
 };
 
 class Tag {
-    uint8_t tag;
+    public:
+    uint64_t tag;
     bool valid;
     bool dirty;
-public:
-    Tag(uint8_t tag_, bool valid_, bool dirty_): tag(tag_), valid(valid_), dirty(dirty_){}
+    std::vector<bool> accessed;
+    Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity);
+    int utilized();
 };
 
 class FrontEnd {
-    private:
+    protected:
     const uint64_t queue_capacity = 64;
-    std::string benchmark_name;
+    const std::string benchmark_name;
     JedecDRAMSystem *cache_;
     //friend class JedecDRAMSystem;
     std::list<RemoteRequest> LSQ;
@@ -103,21 +105,22 @@ class FrontEnd {
     std::vector<Tag> Meta_SRAM;
     std::list<std::pair<uint64_t, bool>> front_q;
 
+    uint64_t GetCLK(){ return cache_->clk_; }
+
     public:
     FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config);
+    virtual ~FrontEnd(){};
     bool GetReq(RemoteRequest &req);
     bool AddTransaction(uint64_t hex_addr, bool is_write);
     bool WillAcceptTransaction(uint64_t hex_addr, bool is_write) const;
     bool GetResp(uint64_t &req_id);
-    void Refill(uint64_t req_id);
-    void CacheReadCallBack(uint64_t req_id);
+    virtual void Refill(uint64_t req_id);
+    virtual void CacheReadCallBack(uint64_t req_id);
     void CacheWriteCallBack(uint64_t req_id);
-    void Drained();
-    void WarmUp(uint64_t hex_addr, bool is_write);
-};
-
-class KONAMethod : public FrontEnd{
-
+    virtual void Drained();
+    virtual void WarmUp(uint64_t hex_addr, bool is_write);
+    virtual void PrintStat() {};
+    virtual void ResetStat() {};
 };
 
 class cadcache : public JedecDRAMSystem {

@@ -320,6 +320,8 @@ bool HMTTCPU::GetNextSeg() {
 }
 
 void HMTTCPU::Reset() {
+    memory_system_.ResetStats();
+
     //base class
     clk_ = 0;
     get_next_ = true;
