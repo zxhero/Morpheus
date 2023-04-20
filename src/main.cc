@@ -1,6 +1,7 @@
 #include <iostream>
 #include "./../ext/headers/args.hxx"
 #include "cpu.h"
+#include <fstream>
 
 using namespace dramsim3;
 
@@ -54,12 +55,21 @@ int main(int argc, const char **argv) {
     std::string trace_file = args::get(trace_file_arg);
     std::string stream_type = args::get(stream_arg);
     std::string seg_file = args::get(seg_file_arg);
+    std::string pid_file = output_dir + "/pid";
+    std::ifstream pid_file_(pid_file);
+    if (pid_file_.fail()) {
+        std::cerr << "pid file does not exist" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
+    }
+    int ppid; uint64_t num_p;
+    pid_file_>>ppid>>num_p;
+    pid_file_.close();
 
 
     HMTTCPU *cpu;
     if(!trace_file.empty() && !seg_file.empty()){
         std::cout<<seg_file<<"\n";
-        cpu = new HMTTCPU(config_file, output_dir, trace_file, seg_file);
+        cpu = new HMTTCPU(config_file, output_dir, trace_file, seg_file, ppid, num_p);
     } else {
         std::cerr << "Trace file and segment file does not provided" << std::endl;
         AbruptExit(__FILE__, __LINE__);

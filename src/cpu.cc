@@ -103,14 +103,14 @@ void TraceBasedCPU::ClockTick() {
 }
 
 HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, const std::string &trace_file,
-                 const std::string &seg_file)
+                 const std::string &seg_file, int ppid_, uint64_t num_p_)
     : CPU(config_file, output_dir,
                     std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1)),
     memory_system_local("configs/DDR4_4Gb_x4_1866.ini", output_dir + "/local",
                         std::bind(&HMTTCPU::ReadCallBack, this, std::placeholders::_1),
                         std::bind(&CPU::WriteCallBack, this, std::placeholders::_1)),
     rob_sz(256 / memory_system_.GetTCK()),
-    cur_seg(0,0){
+    cur_seg(0,0,0), ppid(ppid_), num_p(num_p_){
 
     last_req_ns = 0;
     wait = rob.end();
@@ -142,7 +142,7 @@ void HMTTCPU::ClockTick() {
     memory_system_local.ClockTick();
     if(get_next_){
         if(tmp.valid){
-            GetNextHMTT(tmp, cur_seg.pid, cur_seg.process_num);
+            GetNextHMTT(tmp, ppid, num_p);
             trace_id++;
             get_next_ = false;
             //std::cout<<"["<<std::dec<<kernel_trace_count + app_trace_count<<"]: "<<tmp.added_ns
@@ -289,10 +289,9 @@ uint64_t HMTTCPU::GetClk() {
 }
 
 void HMTTCPU::WarmUp() {
-    uint64_t mid = (cur_seg.sid + cur_seg.eid) / 2;
-    uint64_t s = mid - (simulating / 2);
+    uint64_t s = cur_seg.sid;
     for (; trace_id < s; ++trace_id) {
-        GetNextHMTT(tmp, cur_seg.pid, cur_seg.process_num);
+        GetNextHMTT(tmp, ppid, num_p);
         if(!tmp.is_kernel)
             memory_system_.WarmUp(tmp.addr, tmp.r_w == 0);
     }
@@ -308,15 +307,15 @@ void HMTTCPU::Drained() {
 }
 
 bool HMTTCPU::GetNextSeg() {
+    //TODO: we only process one window for now
+    if(segment_count == 1)
+        return false;
     //select the proper segment
-    while(seg_file_>>cur_seg){
-        if(cur_seg.length() > simulating && cur_seg.length() > 10000000){
-            std::cout<<std::dec<<"Next segment is at "<<cur_seg.sid<<"\n";
-            segment_count ++;
-            return true;
-        }
+    if(!seg_file_.eof()){
+        seg_file_>>cur_seg;
+        segment_count++;
+        return true;
     }
-    return false;
 }
 
 void HMTTCPU::Reset() {

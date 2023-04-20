@@ -46,7 +46,8 @@ add_library(dramsim3 SHARED
     src/cadcache.cpp
         src/trace_seg.cpp
         src/policy/direct_map.cpp
-        src/trace.cpp)
+        src/trace.cpp
+        src/working_size.cpp)
 
 if (THERMAL)
     # dependency check
@@ -126,10 +127,19 @@ add_custom_command(
 )
 
 # utils, .etc
-add_executable(trace_seg src/trace_seg.cpp)
+add_executable(trace_seg util/trace_seg.cpp)
 target_link_libraries(trace_seg PRIVATE dramsim3 args)
 target_compile_options(trace_seg PRIVATE)
 set_target_properties(trace_seg PROPERTIES
+        CXX_STANDARD 11
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+        )
+
+add_executable(working_size util/working_size.cpp)
+target_link_libraries(working_size PRIVATE dramsim3 args)
+target_compile_options(working_size PRIVATE)
+set_target_properties(working_size PROPERTIES
         CXX_STANDARD 11
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO

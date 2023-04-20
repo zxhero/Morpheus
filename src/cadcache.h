@@ -65,23 +65,23 @@ class MemoryPool : public JedecDRAMSystem{
 };
 
 const std::unordered_map<std::string, uint64_t> BenchmarkInfo = {
-        {"ligra_bfs", 76914688},
-        {"memcached", 325341184},
-        {"hpcc", 1051770880},
-        {"wtdbg", 45912064},
-        {"hpcg", 139956224},
-        {"ligra_pagerank", (uint64_t)1557642 *4096},
-        {"imagenet", 9614663680},
-        {"nightmare", (uint64_t)2030002*4096},
-        {"cg", (uint64_t)2851610*4096},
-        {"bt", (uint64_t)2797946*4096},
-        {"mg", (uint64_t)873017*4096},
-        {"mix1", (uint64_t)2215324*4096},
-        {"sp", (uint64_t)2929664*4096},
-        {"ua", (uint64_t)1909247*4096},
-        {"ft", (uint64_t)2628437*4096},
-        {"is", (uint64_t)2105643*4096},
-        {"lu", (uint64_t)3037122*4096}
+        {"ligra_bfs", (uint64_t)328293*4096},
+        //{"memcached", 325341184},
+        //{"hpcc", 1051770880},
+        //{"wtdbg", 45912064},
+        //{"hpcg", 139956224},
+        {"ligra_pagerank", (uint64_t)374708 *4096},
+        {"imagenet", (uint64_t)174471 * 4096},
+        {"nightmare", (uint64_t)158598*4096},
+        {"cg", (uint64_t)423939*4096},
+        {"bt", (uint64_t)252393*4096},
+        {"mg", (uint64_t)369659*4096},
+        {"mix1", (uint64_t)269984*4096},
+        {"sp", (uint64_t)258252*4096},
+        {"ua", (uint64_t)216961*4096},
+        {"ft", (uint64_t)146703*4096},
+        {"is", (uint64_t)165790*4096},
+        {"lu", (uint64_t)522357*4096}
 };
 
 class Tag {
@@ -91,6 +91,7 @@ class Tag {
     bool dirty;
     std::vector<bool> accessed;
     Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity);
+    Tag(){};
     int utilized();
 };
 

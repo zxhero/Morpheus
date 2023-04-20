@@ -8,7 +8,7 @@
 #include <list>
 #include <utility>
 #include "memory_system.h"
-#include "trace_seg.h"
+#include "working_size.h"
 
 namespace dramsim3 {
 
@@ -83,6 +83,8 @@ class HMTTCPU : public CPU {
     const int mshr_sz = 64;
     //const int skipping = 1000000;
     const int simulating = 10000000;
+    const int ppid;
+    const uint64_t num_p;
     //const double clk_ns = 0.5; //2GHz
     HMTTTransaction tmp;
     uint64_t last_req_ns;
@@ -94,7 +96,7 @@ class HMTTCPU : public CPU {
 
     //Global variables
     std::ifstream seg_file_;
-    seg cur_seg;
+    WorkingSet cur_seg;
     uint64_t trace_id;
     uint64_t segment_count;
     bool GetNextSeg();
@@ -109,7 +111,8 @@ class HMTTCPU : public CPU {
 
    public:
     HMTTCPU(const std::string& config_file, const std::string& output_dir,
-                  const std::string& trace_file, const std::string &seg_file);
+                  const std::string& trace_file, const std::string &seg_file,
+                  int ppid_, uint64_t num_p_);
     ~HMTTCPU() {seg_file_.close(); trace_finish(); std::cout<<"destory HMTTCPU\n";};
     void ClockTick() override;
     void ReadCallBack(uint64_t addr) override;

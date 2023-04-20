@@ -65,6 +65,7 @@ FrontEnd::FrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &confi
     cache_ = cache;
     int cache_line_num = 1 << (LogBase2(BenchmarkInfo.at(benchmark_name) * config.ratio / config.granularity));
     Meta_SRAM.resize(cache_line_num, Tag(0, false, false,config.granularity));
+    std::cout<<"cache line num: "<<cache_line_num<<"\n";
 }
 
 bool FrontEnd::GetReq(RemoteRequest &req) {
