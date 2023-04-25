@@ -90,6 +90,7 @@ class Tag {
     bool valid;
     bool dirty;
     std::vector<bool> accessed;
+    std::vector<bool> dirty_bits;
     Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity);
     Tag(){};
     int utilized();
@@ -116,10 +117,10 @@ class FrontEnd {
     bool WillAcceptTransaction(uint64_t hex_addr, bool is_write) const;
     bool GetResp(uint64_t &req_id);
     virtual void Refill(uint64_t req_id);
-    virtual void CacheReadCallBack(uint64_t req_id);
+    virtual void CacheReadCallBack(uint64_t req_id) {};
     void CacheWriteCallBack(uint64_t req_id);
     virtual void Drained();
-    virtual void WarmUp(uint64_t hex_addr, bool is_write);
+    virtual void WarmUp(uint64_t hex_addr, bool is_write) {};
     virtual void PrintStat() {};
     virtual void ResetStat() {};
 };

@@ -54,6 +54,7 @@ RemoteRequest::RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64
 Tag::Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity)
 : tag(tag_), valid(valid_), dirty(dirty_){
     accessed.resize(granularity/256, false);
+    dirty_bits.resize(granularity/64, false);
 }
 
 int Tag::utilized() {
@@ -81,10 +82,6 @@ void FrontEnd::CacheWriteCallBack(uint64_t req_id) {
 
 }
 
-void FrontEnd::CacheReadCallBack(uint64_t req_id) {
-
-}
-
 void FrontEnd::Refill(uint64_t req_id) {
     resp.emplace_back(std::make_pair(req_id, cache_->clk_ + 1));
 }
@@ -106,10 +103,6 @@ void FrontEnd::Drained() {
                                        1));
         front_q.erase(front_q.begin());
     }
-}
-
-void FrontEnd::WarmUp(uint64_t hex_addr, bool is_write) {
-    return;
 }
 
 bool FrontEnd::AddTransaction(uint64_t hex_addr, bool is_write) {

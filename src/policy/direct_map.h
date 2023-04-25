@@ -5,42 +5,29 @@
 #ifndef DRAMSIM3_DIRECT_MAP_H
 #define DRAMSIM3_DIRECT_MAP_H
 
-#include "../cadcache.h"
+#include "cache_frontend.h"
 
 namespace dramsim3 {
 
-class DirectMap : public FrontEnd {
+using CacheAddr = uint64_t;
+
+class DirectMap : public CacheFrontEnd {
 private:
-    const uint64_t latency = 3;
     uint64_t capacity_mask;
-    const uint64_t granularity;
-    using CacheAddr = uint64_t;
+protected:
 
-    std::unordered_map<uint64_t, std::list<Transaction>> MSHRs;
-    uint64_t MSHR_sz;
-    std::unordered_map<CacheAddr, uint64_t> pending_req_to_cache;
-    std::list<Transaction> refill_req_to_cache;
-    std::vector<CacheAddr> refill_buffer;
-    std::unordered_map<CacheAddr, std::pair<RemoteRequest, int>> write_back_buffer;
+    bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;
+    uint64_t GetHexTag(uint64_t hex_addr) override;
+    uint64_t GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) override;
+    uint64_t AllocCPage(uint64_t hex_addr, Tag *&tag_) override;
+    void MissHandler(uint64_t hex_addr, bool is_write) override;
+    void WriteBackData(Tag tag_, uint64_t hex_addr_cache) override;
+    void HashReadCallBack(uint64_t req_id) override;
 
-    uint64_t hit;
-    uint64_t wb_hit;
-    uint64_t miss;
-    SimpleStats::HistoCount line_utility;
-    bool hit_and_return(uint64_t index, bool is_write);
-    bool miss_and_return();
-
-    bool ProcessOneReq();
 
 public:
     DirectMap(std::string output_dir, JedecDRAMSystem *cache, Config &config);
     ~DirectMap(){};
-    void Refill(uint64_t req_id) override;
-    void CacheReadCallBack(uint64_t req_id) override;
-    void Drained() override;
-    void WarmUp(uint64_t hex_addr, bool is_write) override;
-    void PrintStat() override;
-    void ResetStat() override;
 };
 
 }
