@@ -4,6 +4,7 @@
 
 #include "cadcache.h"
 #include "policy/direct_map.h"
+#include "policy/kona.h"
 
 namespace dramsim3{
 
@@ -132,6 +133,8 @@ cadcache::cadcache(Config &config, const std::string &config_str, const std::str
         cache_controller = new FrontEnd(output_dir, this, config);
     else if(config_.cache_policy == Policy::DirectMapped)
         cache_controller = new DirectMap(output_dir, this, config);
+    else if(config_.cache_policy == Policy::Kona)
+        cache_controller = new Kona(output_dir, this, config);
     JedecDRAMSystem::RegisterCallbacks(
             std::bind(&FrontEnd::CacheReadCallBack, cache_controller, std::placeholders::_1),
             std::bind(&FrontEnd::CacheWriteCallBack, cache_controller, std::placeholders::_1)

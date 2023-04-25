@@ -48,7 +48,8 @@ add_library(dramsim3 SHARED
         src/policy/direct_map.cpp
         src/trace.cpp
         src/working_size.cpp
-        src/policy/cache_frontend.cpp)
+        src/policy/cache_frontend.cpp
+        src/policy/kona.cpp)
 
 if (THERMAL)
     # dependency check

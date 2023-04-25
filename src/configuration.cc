@@ -120,7 +120,8 @@ void Config::InitDRAMParams() {
     granularity = GetInteger("memory_pool", "Granularity", 64);
     ratio = reader.GetReal("memory_pool", "Ratio", 0.2);
     std::map<std::string, Policy> policy_pairs = {
-        {"Direct", Policy::DirectMapped},     {"Dummy", Policy::Dummy}};
+        {"Direct", Policy::DirectMapped},     {"Dummy", Policy::Dummy},
+        {"Kona", Policy::Kona}};
     cache_policy = policy_pairs[reader.Get("memory_pool", "policy", "Dummy")];
 
     if (IsHMC()) {

@@ -35,6 +35,7 @@ enum class RefreshPolicy {
 enum class Policy{
     Dummy,
     DirectMapped,
+    Kona,
     SIZE
 };
 
