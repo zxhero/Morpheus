@@ -116,7 +116,9 @@ HMTTCPU::HMTTCPU(const std::string &config_file, const std::string &output_dir, 
     wait = rob.end();
     outstanding = 0;
     wall_clk = 0;
-    max_outstanding = 0;
+    for (int i = 0; i < mshr_sz; ++i) {
+        read_outstanding[i] = 0;
+    }
     kernel_trace_count = 0;
     app_trace_count = 0;
     read_latency.clear();
@@ -205,8 +207,7 @@ void HMTTCPU::ClockTick() {
             wait->issued_clk = wall_clk;
             if(wait->r_w != 0){
                 outstanding ++;
-                if(outstanding > max_outstanding)
-                    max_outstanding = outstanding;
+                read_outstanding[outstanding] ++;
                 wait ++;
             }else{
                 if(wait == rob.begin()){
@@ -257,7 +258,10 @@ void HMTTCPU::ReadCallBack(uint64_t addr) {
 void HMTTCPU::PrintStats() {
     memory_system_.PrintStats();
     memory_system_local.PrintStats();
-    std::cout<<"max outstanding: "<<max_outstanding<<"\n";
+    std::cout<<"outstanding distribution: "<<"\n";
+    for (int i = 0; i < mshr_sz; ++i) {
+        std::cout<<i<<" "<<read_outstanding[i]<<"\n";
+    }
     std::cout<<std::dec<<"cpu clock: "<<clk_<<"\n";
     std::cout<<std::dec<<"wall clock: "<<wall_clk<<"\n";
     std::cout<<std::dec<<"kernel traces: "<<kernel_trace_count<<"\n";
@@ -316,6 +320,7 @@ bool HMTTCPU::GetNextSeg() {
         segment_count++;
         return true;
     }
+    return false;
 }
 
 void HMTTCPU::Reset() {
@@ -329,7 +334,9 @@ void HMTTCPU::Reset() {
     kernel_trace_count = 0;
     app_trace_count = 0;
     wall_clk = 0;
-    max_outstanding = 0;
+    for (int i = 0; i < mshr_sz; ++i) {
+        read_outstanding[i] = 0;
+    }
     read_latency.clear();
 
     last_req_ns = 0;

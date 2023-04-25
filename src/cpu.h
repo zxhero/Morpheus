@@ -106,7 +106,7 @@ class HMTTCPU : public CPU {
     uint64_t kernel_trace_count;
     uint64_t app_trace_count;
     uint64_t  wall_clk;
-    uint64_t max_outstanding;
+    SimpleStats::HistoCount read_outstanding;
     SimpleStats::HistoCount read_latency;
 
    public:
