@@ -26,8 +26,6 @@ private:
     bool miss_and_return();
     bool hit_and_return(Tag &tag_, uint64_t hex_addr, bool is_write);
 
-    bool ProcessOneReq();
-
 protected:
     const uint64_t granularity;
     const uint64_t granularity_mask;
@@ -42,6 +40,9 @@ protected:
     virtual void MissHandler(uint64_t hex_addr, bool is_write) = 0;
     virtual void WriteBackData(Tag tag_, uint64_t hex_addr_cache) = 0;
     virtual void HashReadCallBack(uint64_t req_id) = 0;
+    void DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache);
+    bool ProcessOneReq();
+    void ProcessRefillReq();
 
 public:
     CacheFrontEnd(std::string output_dir, JedecDRAMSystem *cache, Config &config);

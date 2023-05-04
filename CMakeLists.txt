@@ -49,7 +49,9 @@ add_library(dramsim3 SHARED
         src/trace.cpp
         src/working_size.cpp
         src/policy/cache_frontend.cpp
-        src/policy/kona.cpp)
+        src/policy/kona.cpp
+        src/policy/our.cpp
+        util/murmur3/murmur3.c)
 
 if (THERMAL)
     # dependency check

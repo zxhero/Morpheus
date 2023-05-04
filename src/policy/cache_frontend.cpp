@@ -103,10 +103,7 @@ bool CacheFrontEnd::ProcessOneReq() {
     return miss_and_return();
 }
 
-void CacheFrontEnd::Drained() {
-    if(!front_q.empty() && ProcessOneReq())
-        front_q.erase(front_q.begin());
-
+void CacheFrontEnd::ProcessRefillReq() {
     if(refill_req_to_cache.empty())
         return;
 
@@ -121,6 +118,13 @@ void CacheFrontEnd::Drained() {
                                refill_req_to_cache.front().is_write);
         refill_req_to_cache.erase(refill_req_to_cache.begin());
     }
+}
+
+void CacheFrontEnd::Drained() {
+    if(!front_q.empty() && ProcessOneReq())
+        front_q.erase(front_q.begin());
+
+    ProcessRefillReq();
 }
 
 void CacheFrontEnd::CacheReadCallBack(uint64_t req_id) {
@@ -152,27 +156,25 @@ void CacheFrontEnd::CacheReadCallBack(uint64_t req_id) {
     }
 }
 
-void CacheFrontEnd::Refill(uint64_t req_id) {
+void CacheFrontEnd::DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache) {
     auto reqs = MSHRs[req_id];
     MSHRs.erase(req_id);
     MSHR_sz -= reqs.size();
-    Tag *t = NULL;
-    uint64_t hex_addr_cache = AllocCPage(req_id, t);
     uint64_t tag = GetHexTag(req_id);
 
     bool refill_buffer_miss = std::find(refill_buffer.begin(), refill_buffer.end(), hex_addr_cache)
             == refill_buffer.end();
-    bool is_old_dirty = t->valid && t->dirty;
+    bool is_old_dirty = t.valid && t.dirty;
 
-    if(t->valid){
-        line_utility[t->utilized()] ++;
+    if(t.valid){
+        line_utility[t.utilized()] ++;
     }
 
     //hit in refill buffer
     if(!refill_buffer_miss && is_old_dirty){
         //std::cout<<"Cache refill: hit and dirty "<<std::hex<<req_id<<"\n";
         //replace and write back the page in refill buffer
-        WriteBackData(*t, hex_addr_cache);
+        WriteBackData(t, hex_addr_cache);
     }
 
     // read and evict dirty data
@@ -182,7 +184,7 @@ void CacheFrontEnd::Refill(uint64_t req_id) {
             refill_req_to_cache.emplace_back(
                     Transaction(hex_addr_cache + i, false));
         }
-        write_back_buffer[hex_addr_cache] = std::make_pair(*t, granularity / 64);
+        write_back_buffer[hex_addr_cache] = std::make_pair(t, granularity / 64);
         //new data are stored in refill buffer temporarily.
         refill_buffer.push_back(hex_addr_cache);
     }
@@ -200,16 +202,21 @@ void CacheFrontEnd::Refill(uint64_t req_id) {
     // update tags
     // response data
     //std::cout<<reqs.size()<<" wait in MSHR\n";
-    *t = Tag(tag, true, false, granularity);
+    t = Tag(tag, true, false, granularity);
     for (auto i = reqs.begin(); i != reqs.end(); ++i) {
         if(!i->is_write){
             resp.emplace_back(std::make_pair(i->addr, GetCLK() + 1));
         }
-        t->dirty |= i->is_write;
+        t.dirty |= i->is_write;
         if(granularity > 256)
-            t->accessed[(i->addr & granularity_mask)/256] = true;
+            t.accessed[(i->addr & granularity_mask)/256] = true;
     }
+}
 
+void CacheFrontEnd::Refill(uint64_t req_id) {
+    Tag *t = NULL;
+    uint64_t hex_addr_cache = AllocCPage(req_id, t);
+    DoRefill(req_id, *t, hex_addr_cache);
 }
 
 void CacheFrontEnd::WarmUp(uint64_t hex_addr, bool is_write) {

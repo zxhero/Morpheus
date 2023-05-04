@@ -36,6 +36,7 @@ enum class Policy{
     Dummy,
     DirectMapped,
     Kona,
+    Our,
     SIZE
 };
 
