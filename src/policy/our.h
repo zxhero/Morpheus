@@ -27,8 +27,15 @@ class RPTentry{
     uint64_t pt_index;
     bool valid;
     RPTentry(){valid = false;};
+    RPTentry(uint64_t pt_index_): pt_index(pt_index_){valid = true;};
 };
 
+/*
+ * multi-port cache
+ * data only has temporary locality
+ * read: direct mapped
+ * write has higher priority than read to same address
+ * */
 template<class dType>
 class SRAMCache{
   private:
@@ -47,6 +54,7 @@ class SRAMCache{
     uint64_t hit_;
     uint64_t miss_;
     std::set<uint64_t> last_req;
+    uint64_t last_hit_req;
   public:
     SRAMCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
               std::vector<dType> *data_backup_);
@@ -59,34 +67,68 @@ class SRAMCache{
     dType WarmUp(uint64_t hex_offset, bool is_write, dType dptr = dType());
 };
 
+/*
+ * one-port cache
+ * take advantage of stream accessing pattern of reversed page table
+ * read: prefetch 8 RPTe at a time
+ * write through if miss
+ * */
+class RPTCache {
+  private:
+    const CacheAddr RPT_hex_addr;
+    const uint32_t rpte_size;
+    const CacheAddr RPT_hex_addr_h;
+    std::vector<RPTentry> *data_backup;
+    JedecDRAMSystem *dram;
+    std::list<std::pair<CacheAddr, bool>> pending_req_to_RPT;
+    std::set<CacheAddr> waiting_resp_RPT;
+    CacheAddr tag;
+
+  public:
+    RPTCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
+              std::vector<RPTentry> *data_backup_);
+    ~RPTCache(){};
+    //hit return true
+    void AddTransaction(uint64_t hex_offset, bool is_write, RPTentry dptr = RPTentry());
+    bool WillAcceptTransaction();
+    void Drained();
+    bool DRAMReadBack(CacheAddr req_id);
+    RPTentry GetData(uint64_t hex_offset);
+    RPTentry WarmUp(uint64_t hex_offset, bool is_write, RPTentry dptr = RPTentry());
+};
+
 class our : public CacheFrontEnd{
   private:
     const CacheAddr hashmap_hex_addr;
     const uint32_t pte_size;
-    const CacheAddr RPT_hex_addr;
-    const uint32_t rpte_size;
     class intermediate_data{
         public:
-        RPTentry *rpte;
+        uint32_t rpt_index;
         PTentry pte;
         uint32_t pt_index;
         bool valid;
-        intermediate_data(RPTentry *rpte_, PTentry pte_, uint32_t pt_index_):
-        rpte(rpte_), pte(pte_), pt_index(pt_index_){ valid = true;};
+        intermediate_data(uint32_t rpt_index_, PTentry pte_, uint32_t pt_index_):
+        rpt_index(rpt_index_), pte(pte_), pt_index(pt_index_){ valid = true;};
         intermediate_data(){ valid = false;};
+    };
+    class intermediate_req{
+        public:
+        Tag *t;
+        uint64_t hex_addr_cache;
+        uint64_t hex_addr;
+        bool is_write;
+        intermediate_req(Tag *t_, uint64_t hex_addr_cache_, uint64_t hex_addr_, bool is_write_):
+        t(t_), hex_addr_cache(hex_addr_cache_), hex_addr(hex_addr_), is_write(is_write_){};
+        intermediate_req(){};
     };
     std::vector<PTentry> hash_page_table;
     SRAMCache<PTentry> tlb;
     std::vector<RPTentry> pte_addr_table;
+    RPTCache rtlb;
     uint64_t v_hex_addr_cache;
-    //std::pair<CacheAddr, bool> waiting_resp_from_hashmap;
-    //uint64_t alloc_ptr = 0;
+    std::list<intermediate_req> pending_req_to_Meta;
     std::list<uint64_t> pending_req_to_PT;
-    std::list<std::pair<CacheAddr, struct intermediate_data>> pending_req_to_RPT;
-    std::unordered_map<CacheAddr, struct intermediate_data> waiting_resp_RPT;
-    std::list<std::pair<CacheAddr, struct intermediate_data>> pending_write_to_RPT;
-    //std::list<std::pair<CacheAddr, PTentry>> pending_invalidate_PTE;
-    void InsertRemotePage(struct intermediate_data tmp);
+    void InsertRemotePage(intermediate_data tmp);
     void AllocCPage(uint32_t pt_index, uint64_t req_id);
 
     uint64_t collision_times;

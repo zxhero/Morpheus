@@ -41,7 +41,7 @@ protected:
     virtual void WriteBackData(Tag tag_, uint64_t hex_addr_cache) = 0;
     virtual void HashReadCallBack(uint64_t req_id) = 0;
     void DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache);
-    bool ProcessOneReq();
+    bool ProcessOneReq(uint64_t hex_addr, bool is_write, Tag *t, uint64_t hex_addr_cache);
     void ProcessRefillReq();
 
 public:

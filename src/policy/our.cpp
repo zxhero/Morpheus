@@ -12,6 +12,8 @@ SRAMCache<dType>::SRAMCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t 
     : hex_dram_base_addr(hex_base), dType_sz(sz), data_backup(data_backup_), dram(dram_){
     data.resize(capacity);
     tags.resize(capacity, Tag(0, false, false, 0));
+    hit_ = 0;
+    miss_ = 0;
 }
 
 template<class dType>
@@ -68,8 +70,10 @@ bool SRAMCache<dType>::AddTransaction(uint64_t hex_offset, bool is_write, dType 
     }
 
     if(hit){
-        last_req.erase(hex_offset);
-        hit_++;
+        if(last_req.find(hex_offset) != last_req.end())
+            last_req.erase(hex_offset);
+        else
+            hit_++;
     }
     else if(last_req.find(hex_offset) == last_req.end()){
         miss_++;
@@ -143,9 +147,8 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     CacheFrontEnd(output_dir, cache, config),
     hashmap_hex_addr(Meta_SRAM.size()*granularity),
     pte_size(12),
-    RPT_hex_addr(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size ),
-    rpte_size(8),
-    tlb(hashmap_hex_addr, cache, pte_size, Meta_SRAM.size() * 2 / 64, &hash_page_table){
+    tlb(hashmap_hex_addr, cache, pte_size, Meta_SRAM.size() * 2 / 64, &hash_page_table),
+    rtlb(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size, cache, 8, Meta_SRAM.size(), &pte_addr_table){
     std::cout<<"our frontend\n";
     utilization_file.open(output_dir+"/utilization_our_"+std::to_string(granularity));
     if (utilization_file.fail()) {
@@ -156,17 +159,17 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     uint32_t virtual_cache_page_num = Meta_SRAM.size();
     hash_page_table.resize(virtual_cache_page_num * 2);
     pte_addr_table.resize(Meta_SRAM.size());
-    std::cout<<"hash page table size is "<<hash_page_table.size()<<"\n";
-    std::cout<<"tlb size is "<<tlb.data.size()<<"\n";
+    std::cout<<"hash page table size is "<<hash_page_table.size()<<"\n"
+            <<"tlb size is "<<tlb.data.size()<<"\n"
+            <<"hash page table base: "<<hashmap_hex_addr<<"\n";
 
     collision_times = 0;
     non_collision_times = 0;
 }
 
 void our::HashReadCallBack(uint64_t req_id) {
-    if(waiting_resp_RPT.find(req_id) != waiting_resp_RPT.end()){
-        InsertRemotePage(waiting_resp_RPT[req_id]);
-        waiting_resp_RPT.erase(req_id);
+    if(rtlb.DRAMReadBack(req_id)){
+        return;
     }else
         tlb.DRAMReadBack(req_id);
 }
@@ -231,7 +234,8 @@ void our::Refill(uint64_t req_id) {
 
 void our::Drained() {
     tlb.Drained();
-    if(!pending_req_to_PT.empty()){
+    rtlb.Drained();
+    if(!pending_req_to_PT.empty() && rtlb.WillAcceptTransaction()){
         uint32_t value[128/32];
         MurmurHash3_x64_128(&(*pending_req_to_PT.begin()), sizeof(uint64_t), 0, value);
         uint32_t pt_index = value[0] % hash_page_table.size();
@@ -240,15 +244,14 @@ void our::Drained() {
             //hash collision
             if(pte.valid){
                 collision_times ++;
-                intermediate_data tmp(&pte_addr_table[pte.hex_cache_addr / granularity], pte, pt_index);
+                intermediate_data tmp(pte.hex_cache_addr / granularity, pte, pt_index);
                 tmp.pte.hex_addr_aligned = pending_req_to_PT.front();
-                uint64_t hex_addr = RPT_hex_addr + pte.hex_cache_addr / granularity * rpte_size;
-                pending_write_to_RPT.emplace_back(std::make_pair(hex_addr, tmp));
                 //in case the collided cpage is at the head of fifo
                 if(v_hex_addr_cache == tmp.pte.hex_cache_addr){
                     v_hex_addr_cache += (granularity);
                     v_hex_addr_cache %= (Meta_SRAM.size() * granularity);
                 }
+                InsertRemotePage(tmp);
             }else{
                 non_collision_times ++;
                 AllocCPage(pt_index, pending_req_to_PT.front());
@@ -257,21 +260,10 @@ void our::Drained() {
         }
     }
 
-    if(!pending_write_to_RPT.empty()){
-        if(cache_->JedecDRAMSystem::WillAcceptTransaction(pending_write_to_RPT.front().first, true)){
-            cache_->JedecDRAMSystem::AddTransaction(pending_write_to_RPT.front().first, true);
-            if(pending_write_to_RPT.front().second.valid)
-                InsertRemotePage((pending_write_to_RPT.front().second));
-            pending_write_to_RPT.pop_front();
-        }
-    }
-
-    if(!pending_req_to_RPT.empty()){
-        if(cache_->JedecDRAMSystem::WillAcceptTransaction(pending_req_to_RPT.front().first, false)){
-            pending_write_to_RPT.emplace_back(std::make_pair(pending_req_to_RPT.front().first - 64, intermediate_data()));
-            cache_->JedecDRAMSystem::AddTransaction(pending_req_to_RPT.front().first, false);
-            waiting_resp_RPT[pending_req_to_RPT.front().first] = pending_req_to_RPT.front().second;
-            pending_req_to_RPT.pop_front();
+    if(!pending_req_to_Meta.empty()){
+        if(CacheFrontEnd::ProcessOneReq(pending_req_to_Meta.front().hex_addr, pending_req_to_Meta.front().is_write,
+                                        pending_req_to_Meta.front().t, pending_req_to_Meta.front().hex_addr_cache)){
+            pending_req_to_Meta.erase(pending_req_to_Meta.begin());
         }
     }
 
@@ -281,9 +273,13 @@ void our::Drained() {
         MurmurHash3_x64_128(&hex_addr, sizeof(uint64_t), 0, value);
         uint32_t pt_index = value[0] % hash_page_table.size();
         if(tlb.AddTransaction(pt_index, false)){
-            if(CacheFrontEnd::ProcessOneReq()){
-                front_q.erase(front_q.begin());
-            }
+            Tag *t = NULL;
+            uint64_t hex_addr_cache;
+            GetTag(front_q.front().first, t, hex_addr_cache);
+
+            pending_req_to_Meta.emplace_back(intermediate_req(t, hex_addr_cache,
+                                                              front_q.front().first, front_q.front().second));
+            front_q.erase(front_q.begin());
         }
     }
 
@@ -292,20 +288,14 @@ void our::Drained() {
 
 void our::AllocCPage(uint32_t pt_index, uint64_t req_id) {
     uint64_t index = v_hex_addr_cache / granularity;
-    intermediate_data tmp(&pte_addr_table[v_hex_addr_cache / granularity],
+    intermediate_data tmp(index,
                           PTentry(req_id, v_hex_addr_cache),
                           pt_index);
 
-    bool prefetched = v_hex_addr_cache / granularity * rpte_size % 64 != 0;
-    if(Meta_SRAM[index].valid && !prefetched){
-        uint64_t hex_addr = RPT_hex_addr + v_hex_addr_cache / granularity * rpte_size;
-        pending_req_to_RPT.emplace_back(std::make_pair(hex_addr, tmp));
-    }else{
-        InsertRemotePage(tmp);
-    }
+    rtlb.AddTransaction(index, false);
+    InsertRemotePage(tmp);
     v_hex_addr_cache += (granularity);
-    v_hex_addr_cache %= (Meta_SRAM.size() * granularity);
-
+    v_hex_addr_cache %= hashmap_hex_addr;
 }
 
 uint64_t our::AllocCPage(uint64_t hex_addr, Tag *&tag_) {
@@ -328,15 +318,15 @@ void our::CheckHashPT() {
 
 void our::InsertRemotePage(intermediate_data tmp) {
     //invalidate old pte
-    if(tmp.rpte->valid && tmp.rpte->pt_index != tmp.pt_index){
+    RPTentry rpte = rtlb.GetData(tmp.rpt_index);
+    if(rpte.valid && rpte.pt_index != tmp.pt_index){
         PTentry e;
-        tlb.AddTransaction(tmp.rpte->pt_index, true, e);
+        tlb.AddTransaction(rpte.pt_index, true, e);
         CheckHashPT();
     }
 
     //update RPT
-    tmp.rpte->pt_index = tmp.pt_index;
-    tmp.rpte->valid = true;
+    rtlb.AddTransaction(tmp.rpt_index, true, RPTentry(tmp.pt_index));
 
     //write page table
     tlb.AddTransaction(tmp.pt_index, true, tmp.pte);
@@ -372,10 +362,11 @@ void our::WarmUp(uint64_t hex_addr, bool is_write) {
     }else{
         index = v_hex_addr_cache / granularity;
         //clear old pte
-        if(pte_addr_table[index].valid){
+        RPTentry rpte = rtlb.GetData(index);
+        if(rpte.valid){
             e.valid = false;
             e.hex_cache_addr = e.hex_addr_aligned = 0;
-            tlb.WarmUp(pte_addr_table[index].pt_index, true, e);
+            tlb.WarmUp(rpte.pt_index, true, e);
         }
 
         //set up new pte
@@ -385,8 +376,7 @@ void our::WarmUp(uint64_t hex_addr, bool is_write) {
         tlb.WarmUp(pt_index, true, e);
 
         //update RPT
-        pte_addr_table[index].pt_index = pt_index;
-        pte_addr_table[index].valid = true;
+        rtlb.WarmUp(index, true, RPTentry(pt_index));
 
         v_hex_addr_cache += (granularity);
         v_hex_addr_cache %= (Meta_SRAM.size() * granularity);
@@ -406,5 +396,71 @@ void our::PrintStat() {
                     <<"TLB miss: "<<tlb.miss_<<"\n";
 
     CacheFrontEnd::PrintStat();
+}
+
+RPTCache::RPTCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
+                   std::vector<RPTentry> *data_backup_):
+                   RPT_hex_addr(hex_base), rpte_size(sz), RPT_hex_addr_h(hex_base + capacity * sz){
+    data_backup = data_backup_;
+    dram = dram_;
+    std::cout<<"RPT base: "<<RPT_hex_addr<<"\n"
+            <<"RPT high: "<<RPT_hex_addr_h<<"\n";
+}
+
+void RPTCache::AddTransaction(uint64_t hex_offset, bool is_write, RPTentry dptr) {
+    uint64_t hex_addr = RPT_hex_addr + hex_offset * rpte_size;
+    if(is_write){
+        //update RPT
+        (*data_backup)[hex_offset] = dptr;
+        if((hex_offset * rpte_size / 64) != tag)
+            pending_req_to_RPT.emplace_back(std::make_pair(hex_addr, true));
+    }else{
+        bool prefetched = hex_offset * rpte_size % 64 != 0;
+        if(!prefetched){
+            tag = hex_offset * rpte_size / 64;
+            pending_req_to_RPT.emplace_back(std::make_pair(hex_addr, false));
+            if(hex_addr == RPT_hex_addr)
+                pending_req_to_RPT.emplace_back(std::make_pair(RPT_hex_addr_h - 64, true));
+            else
+                pending_req_to_RPT.emplace_back(std::make_pair(hex_offset - 64, true));
+        }
+    }
+}
+
+bool RPTCache::WillAcceptTransaction() {
+    return pending_req_to_RPT.empty() && waiting_resp_RPT.empty();
+}
+
+void RPTCache::Drained() {
+    if(!pending_req_to_RPT.empty()){
+        if(dram->JedecDRAMSystem::WillAcceptTransaction(pending_req_to_RPT.front().first, pending_req_to_RPT.front().second)){
+            dram->JedecDRAMSystem::AddTransaction(pending_req_to_RPT.front().first, pending_req_to_RPT.front().second);
+            if(!pending_req_to_RPT.front().second)
+                waiting_resp_RPT.insert(pending_req_to_RPT.front().first);
+            pending_req_to_RPT.pop_front();
+        }
+    }
+}
+
+bool RPTCache::DRAMReadBack(CacheAddr req_id) {
+    if(waiting_resp_RPT.find(req_id) != waiting_resp_RPT.end()){
+        waiting_resp_RPT.erase(req_id);
+        return true;
+    }
+
+    return false;
+}
+
+RPTentry RPTCache::GetData(uint64_t hex_offset) {
+    return (*data_backup)[hex_offset];
+}
+
+RPTentry RPTCache::WarmUp(uint64_t hex_offset, bool is_write, RPTentry dptr) {
+    if(!is_write){
+        tag = hex_offset * rpte_size / 64;
+    }else{
+        (*data_backup)[hex_offset] = dptr;
+    }
+    return (*data_backup)[hex_offset];
 }
 }

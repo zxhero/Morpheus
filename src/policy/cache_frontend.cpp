@@ -39,14 +39,7 @@ bool CacheFrontEnd::miss_and_return() {
     return true;
 }
 
-bool CacheFrontEnd::ProcessOneReq() {
-    uint64_t hex_addr = front_q.front().first;
-    bool is_write = front_q.front().second;
-
-    //std::cout<<"cache controller: ProcessOneReq "<<std::hex<<hex_addr<<(is_write ? " W": " R")<<"\n"<<std::flush;
-    uint64_t hex_addr_cache;
-    Tag *t = NULL;
-
+bool CacheFrontEnd::ProcessOneReq(uint64_t hex_addr, bool is_write, Tag *t, uint64_t hex_addr_cache) {
     //check tags
     if(GetTag(hex_addr, t, hex_addr_cache)){
         //std::cout<<"hit in Meta_SRAM\n";
@@ -121,8 +114,13 @@ void CacheFrontEnd::ProcessRefillReq() {
 }
 
 void CacheFrontEnd::Drained() {
-    if(!front_q.empty() && ProcessOneReq())
-        front_q.erase(front_q.begin());
+    if(!front_q.empty()){
+        Tag *t = NULL;
+        uint64_t hex_addr_cache;
+        GetTag(front_q.front().first, t, hex_addr_cache);
+        if(ProcessOneReq(front_q.front().first, front_q.front().second, t, hex_addr_cache))
+            front_q.erase(front_q.begin());
+    }
 
     ProcessRefillReq();
 }
