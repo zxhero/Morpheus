@@ -145,6 +145,7 @@ dType SRAMCache<dType>::WarmUp(uint64_t hex_offset, bool is_write, dType dptr) {
 
 our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     CacheFrontEnd(output_dir, cache, config),
+    granularity(config.granularity),
     hashmap_hex_addr(Meta_SRAM.size()*granularity),
     pte_size(12),
     tlb(hashmap_hex_addr, cache, pte_size, Meta_SRAM.size() * 2 / 64, &hash_page_table),
@@ -165,6 +166,8 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
 
     collision_times = 0;
     non_collision_times = 0;
+
+    tracker_ = new OurTracker(this);
 }
 
 void our::HashReadCallBack(uint64_t req_id) {
@@ -200,10 +203,6 @@ bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
 
     //PT miss
     return false;
-}
-
-uint64_t our::GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) {
-    return hex_tag;
 }
 
 void our::MissHandler(uint64_t hex_addr, bool is_write) {
@@ -262,7 +261,8 @@ void our::Drained() {
 
     if(!pending_req_to_Meta.empty()){
         if(CacheFrontEnd::ProcessOneReq(pending_req_to_Meta.front().hex_addr, pending_req_to_Meta.front().is_write,
-                                        pending_req_to_Meta.front().t, pending_req_to_Meta.front().hex_addr_cache)){
+                                        pending_req_to_Meta.front().t, pending_req_to_Meta.front().hex_addr_cache,
+                                        pending_req_to_Meta.front().is_hit)){
             pending_req_to_Meta.erase(pending_req_to_Meta.begin());
         }
     }
@@ -275,10 +275,10 @@ void our::Drained() {
         if(tlb.AddTransaction(pt_index, false)){
             Tag *t = NULL;
             uint64_t hex_addr_cache;
-            GetTag(front_q.front().first, t, hex_addr_cache);
+            bool is_hit = GetTag(front_q.front().first, t, hex_addr_cache);
 
             pending_req_to_Meta.emplace_back(intermediate_req(t, hex_addr_cache,
-                                                              front_q.front().first, front_q.front().second));
+                                                              front_q.front().first, front_q.front().second, is_hit));
             front_q.erase(front_q.begin());
         }
     }
@@ -385,7 +385,7 @@ void our::WarmUp(uint64_t hex_addr, bool is_write) {
     //warm up Meta
     Meta_SRAM[index] = Tag(GetHexTag(hex_addr), true, is_write, granularity);
     if(granularity > 256)
-        Meta_SRAM[index].accessed[(hex_addr & granularity_mask) / 256] = true;
+        Meta_SRAM[index].accessed[(hex_addr % granularity) / 256] = true;
 }
 
 void our::PrintStat() {

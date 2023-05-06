@@ -53,8 +53,8 @@ RemoteRequest::RemoteRequest(bool is_write_, uint64_t hex_addr_, int sz_, uint64
     exit_time = exit_time_;
 }
 
-Tag::Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity)
-: tag(tag_), valid(valid_), dirty(dirty_){
+Tag::Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity_)
+: tag(tag_), valid(valid_), dirty(dirty_), granularity(granularity_){
     accessed.resize(granularity/256, false);
     dirty_bits.resize(granularity/64, false);
 }

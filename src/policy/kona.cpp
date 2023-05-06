@@ -8,6 +8,8 @@ namespace dramsim3 {
 
 Kona::Kona(std::string output_dir, JedecDRAMSystem *cache, Config &config) :
     CacheFrontEnd(output_dir, cache, config),
+    granularity(config.granularity),
+    granularity_mask(granularity - 1),
     index_num(Meta_SRAM.size() / 4),
     hashmap_hex_addr(Meta_SRAM.size()*granularity){
     std::cout<<"Kona frontend\n";
@@ -16,6 +18,8 @@ Kona::Kona(std::string output_dir, JedecDRAMSystem *cache, Config &config) :
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
+
+    tracker_ = new KonaTracker(this, index_num);
 }
 
 bool Kona::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
@@ -34,10 +38,6 @@ bool Kona::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
 
 uint64_t Kona::GetHexTag(uint64_t hex_addr) {
     return hex_addr / granularity / index_num;
-}
-
-uint64_t Kona::GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) {
-    return ((hex_addr_cache / granularity / 4) + hex_tag * index_num) * granularity;
 }
 
 uint64_t Kona::AllocCPage(uint64_t hex_addr, Tag *&tag_) {

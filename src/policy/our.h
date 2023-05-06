@@ -99,6 +99,7 @@ class RPTCache {
 
 class our : public CacheFrontEnd{
   private:
+    const uint64_t granularity;
     const CacheAddr hashmap_hex_addr;
     const uint32_t pte_size;
     class intermediate_data{
@@ -117,8 +118,9 @@ class our : public CacheFrontEnd{
         uint64_t hex_addr_cache;
         uint64_t hex_addr;
         bool is_write;
-        intermediate_req(Tag *t_, uint64_t hex_addr_cache_, uint64_t hex_addr_, bool is_write_):
-        t(t_), hex_addr_cache(hex_addr_cache_), hex_addr(hex_addr_), is_write(is_write_){};
+        bool is_hit;
+        intermediate_req(Tag *t_, uint64_t hex_addr_cache_, uint64_t hex_addr_, bool is_write_, bool is_hit_):
+        t(t_), hex_addr_cache(hex_addr_cache_), hex_addr(hex_addr_), is_write(is_write_), is_hit(is_hit_){};
         intermediate_req(){};
     };
     std::vector<PTentry> hash_page_table;
@@ -138,7 +140,6 @@ class our : public CacheFrontEnd{
   protected:
     bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;
     uint64_t GetHexTag(uint64_t hex_addr) override;
-    uint64_t GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) override;
     uint64_t AllocCPage(uint64_t hex_addr, Tag *&tag_) override;
     void MissHandler(uint64_t hex_addr, bool is_write) override;
     void WriteBackData(Tag tag_, uint64_t hex_addr_cache) override;

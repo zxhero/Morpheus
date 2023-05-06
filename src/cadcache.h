@@ -91,7 +91,8 @@ class Tag {
     bool dirty;
     std::vector<bool> accessed;
     std::vector<bool> dirty_bits;
-    Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity);
+    uint64_t granularity;
+    Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity_);
     Tag(){};
     int utilized();
 };
@@ -101,7 +102,7 @@ class FrontEnd {
     const uint64_t queue_capacity = 64;
     const std::string benchmark_name;
     JedecDRAMSystem *cache_;
-    //friend class JedecDRAMSystem;
+    friend class Tracker;
     std::list<RemoteRequest> LSQ;
     std::list<std::pair<uint64_t, uint64_t>> resp;
     std::vector<Tag> Meta_SRAM;

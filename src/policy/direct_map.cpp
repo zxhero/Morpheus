@@ -8,7 +8,8 @@
 namespace dramsim3 {
 
 DirectMap::DirectMap(std::string output_dir, JedecDRAMSystem *cache, Config &config):
-            CacheFrontEnd(output_dir, cache, config){
+            CacheFrontEnd(output_dir, cache, config),
+            granularity(config.granularity){
     std::cout<<"Direct mapped frontend\n";
     capacity_mask = Meta_SRAM.size() * granularity - 1;
     utilization_file.open(output_dir+"/utilization_DirectMap_"+std::to_string(granularity));
@@ -16,6 +17,7 @@ DirectMap::DirectMap(std::string output_dir, JedecDRAMSystem *cache, Config &con
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
+    tracker_ = new DirectMapTracker(this);
 }
 
 bool DirectMap::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
@@ -30,10 +32,6 @@ bool DirectMap::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) 
         tag_ = NULL;
         return false;
     }
-}
-
-uint64_t DirectMap::GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) {
-    return ((hex_tag * Meta_SRAM.size()) + (hex_addr_cache / granularity))*granularity;
 }
 
 uint64_t DirectMap::GetHexTag(uint64_t hex_addr) {
@@ -55,7 +53,7 @@ void DirectMap::MissHandler(uint64_t hex_addr, bool is_write) {
     }else{
         MSHRs[hex_addr_remote] = std::list<Transaction>{Transaction(hex_addr, is_write)};
         LSQ.emplace_back(RemoteRequest(false, hex_addr_remote,
-                                   1, 0));
+                                   granularity / 64, 0));
     }
 }
 
@@ -65,7 +63,7 @@ void DirectMap::WriteBackData(Tag tag_, uint64_t hex_addr_cache) {
     LSQ.emplace_back(
             RemoteRequest(true,
                           hex_addr,
-                          1,
+                          granularity / 64,
                           0
             )
     );

@@ -10,6 +10,8 @@ namespace dramsim3{
 
 class Kona : public CacheFrontEnd{
   private:
+    const uint64_t granularity;
+    const uint64_t granularity_mask;
     const uint64_t index_num;
     const CacheAddr hashmap_hex_addr;
     std::list<std::pair<CacheAddr, RemoteRequest>> pending_req_to_hashmap;
@@ -18,7 +20,6 @@ class Kona : public CacheFrontEnd{
   protected:
     bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;
     uint64_t GetHexTag(uint64_t hex_addr) override;
-    uint64_t GetHexAddr(uint64_t hex_tag, uint64_t hex_addr_cache) override;
     uint64_t AllocCPage(uint64_t hex_addr, Tag *&tag_) override;
     void MissHandler(uint64_t hex_addr, bool is_write) override;
     void WriteBackData(Tag tag_, uint64_t hex_addr_cache) override;
