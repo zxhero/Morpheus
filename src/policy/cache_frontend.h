@@ -39,7 +39,12 @@ protected:
     virtual void MissHandler(uint64_t hex_addr, bool is_write) = 0;
     virtual void WriteBackData(Tag tag_, uint64_t hex_addr_cache) = 0;
     virtual void HashReadCallBack(uint64_t req_id) = 0;
-    void DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache);
+    /*
+     * remote address is req_id
+     * local address is hex_addr
+     * cache address is hex_addr_cache
+     * */
+    void DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache, uint64_t hex_addr);
     bool ProcessOneReq(uint64_t hex_addr, bool is_write, Tag *t, uint64_t hex_addr_cache, bool is_hit);
     void ProcessRefillReq();
 

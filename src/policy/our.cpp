@@ -98,13 +98,13 @@ void SRAMCache<dType>::Drained() {
 }
 
 template<class dType>
-void SRAMCache<dType>::DRAMReadBack(CacheAddr req_id) {
+bool SRAMCache<dType>::DRAMReadBack(CacheAddr req_id) {
     if(droped_reqs.find(req_id) != droped_reqs.end()){
         if(droped_reqs[req_id] == 1)
             droped_reqs.erase(req_id);
         else
             droped_reqs[req_id] --;
-        return;
+        return true;
     }
 
     if(waiting_resp_from_dram.find(req_id) != waiting_resp_from_dram.end()){
@@ -113,10 +113,10 @@ void SRAMCache<dType>::DRAMReadBack(CacheAddr req_id) {
         tags[index] = Tag(tag, true, false, 0);
         data[index] = (*data_backup)[waiting_resp_from_dram[req_id]];
         waiting_resp_from_dram.erase(req_id);
-        return;
+        return true;
     }
-    std::cerr << "$DRAM read without destination "<<req_id << std::endl;
-    AbruptExit(__FILE__, __LINE__);
+
+    return false;
 }
 
 template<class dType>
@@ -145,13 +145,16 @@ dType SRAMCache<dType>::WarmUp(uint64_t hex_offset, bool is_write, dType dptr) {
 
 our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     CacheFrontEnd(output_dir, cache, config),
-    granularity(config.granularity),
-    hashmap_hex_addr(Meta_SRAM.size()*granularity),
+    hashmap_hex_addr(Meta_SRAM.size()*4096),
     pte_size(12),
     tlb(hashmap_hex_addr, cache, pte_size, Meta_SRAM.size() * 2 / 64, &hash_page_table),
-    rtlb(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size, cache, 8, Meta_SRAM.size(), &pte_addr_table){
+    rtlb(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size, cache, 8, Meta_SRAM.size(), &pte_addr_table),
+    hashmap_hex_addr_block_region(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size + Meta_SRAM.size() * 8),
+    tlb_block_region(hashmap_hex_addr_block_region, cache, pte_size, Meta_SRAM.size() * 16 * 2 / 64, &hpt_block_region),
+    rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
+                      Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_"+std::to_string(granularity));
+    utilization_file.open(output_dir+"/utilization_our");
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -166,34 +169,66 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
 
     collision_times = 0;
     non_collision_times = 0;
+    refill_to_block = 0;
+    refill_to_page = 0;
+    go_back_to_head = 0;
+    promotion_to_page = 0;
+    for (int i = 0; i < 16; ++i) {
+        region_capacity_ratio[i] = 0;
+    }
 
     tracker_ = new OurTracker(this);
+
+    v_hex_addr_cache_br = hashmap_hex_addr - 256;
+    meta_block_region.resize(Meta_SRAM.size() * 16, Tag(0, false, false, 256));
+    hpt_block_region.resize(Meta_SRAM.size() * 16 * 2);
+    rpt_block_region.resize(Meta_SRAM.size() * 16);
+    std::cout<<"HPT in block region size is "<<hpt_block_region.size()<<"\n"
+            <<"tlb size is "<<tlb_block_region.data.size()<<"\n"
+            <<"hash page table base: "<<hashmap_hex_addr_block_region<<"\n";
 }
 
 void our::HashReadCallBack(uint64_t req_id) {
     if(rtlb.DRAMReadBack(req_id)){
         return;
-    }else
-        tlb.DRAMReadBack(req_id);
+    }
+
+    if(tlb.DRAMReadBack(req_id))
+        return;
+
+    if(rtlb_block_region.DRAMReadBack(req_id))
+        return;
+
+    if(tlb_block_region.DRAMReadBack(req_id))
+        return;
+
+    std::cerr << "$DRAM read without destination "<<req_id << std::endl;
+    AbruptExit(__FILE__, __LINE__);
 }
 
 //we get here only after hit in tlb
-bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
-    uint64_t hex_addr_aligned = (hex_addr / granularity) * granularity;
-    uint32_t value[128/32];
-    MurmurHash3_x64_128(&hex_addr_aligned, sizeof(uint64_t), 0, value);
-    uint32_t pt_index = value[0] % hash_page_table.size();
-    PTentry pte = tlb.GetData(pt_index);
+bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache, uint32_t pt_index, bool is_page_region) {
+    uint64_t granularity_ = 256;
+    SRAMCache<PTentry> *tlb_ptr = &tlb_block_region;
+    std::vector<Tag> *meta_ptr = &meta_block_region;
+    if(is_page_region){
+        granularity_ = 4096;
+        tlb_ptr = &tlb;
+        meta_ptr = &Meta_SRAM;
+    }
+
+    uint64_t hex_addr_aligned = (hex_addr / granularity_) * granularity_;
+    PTentry pte = tlb_ptr->GetData(pt_index);
 
     //PT hit
     //TODO: we use tag and hex_addr_aligned as tag for now
     if(pte.valid && pte.hex_addr_aligned == hex_addr_aligned) {
-        uint64_t index = pte.hex_cache_addr / granularity;
+        uint64_t index = pte.hex_cache_addr / granularity_;
         uint64_t tag = hex_addr_aligned;
         //cache hit
-        if(Meta_SRAM[index].valid && Meta_SRAM[index].tag == tag){
-            tag_ = &Meta_SRAM[index];
-            hex_addr_cache = index * granularity + hex_addr % granularity;
+        if((*meta_ptr)[index].valid && (*meta_ptr)[index].tag == tag){
+            tag_ = &(*meta_ptr)[index];
+            hex_addr_cache = index * granularity_ + hex_addr % granularity_;
             return true;
         }else{
             std::cerr<<"we do not have PT hit but cache miss for now\n";
@@ -205,15 +240,24 @@ bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
     return false;
 }
 
+bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
+    std::cerr << "we will never get there GetTag" << std::endl;
+    AbruptExit(__FILE__, __LINE__);
+    return false;
+}
+
+/*
+ * We currently read page from remote
+ * */
 void our::MissHandler(uint64_t hex_addr, bool is_write) {
     MSHR_sz ++;
-    uint64_t hex_addr_remote = hex_addr / granularity * granularity;
+    uint64_t hex_addr_remote = hex_addr / 4096 * 4096;
     if(MSHRs.find(hex_addr_remote) != MSHRs.end()){
         MSHRs[hex_addr_remote].emplace_back(Transaction(hex_addr, is_write));
     }else{
         MSHRs[hex_addr_remote] = std::list<Transaction>{Transaction(hex_addr, is_write)};
         LSQ.emplace_back(RemoteRequest(false, hex_addr_remote,
-                                   granularity / 64, 0));
+                                   4096 / 64, 0));
     }
 }
 
@@ -221,41 +265,106 @@ void our::WriteBackData(Tag tag_, uint64_t hex_addr_cache) {
     LSQ.emplace_back(
         RemoteRequest(true,
                       tag_.tag,
-                      granularity / 64,
+                      tag_.granularity / 64,
                       0
         )
     );
 }
 
 void our::Refill(uint64_t req_id) {
-    pending_req_to_PT.emplace_back(req_id);
+    pending_req_to_PT_br.emplace_back(req_id);
+}
+
+void our::RefillToRegion(intermediate_data tmp) {
+    uint64_t granularity = 256;
+    uint64_t cpage_head = v_hex_addr_cache_br;
+    SRAMCache<PTentry> *tlb_ptr = &tlb_block_region;
+    if(tmp.to_page_region){
+        granularity = 4096;
+        cpage_head = v_hex_addr_cache;
+        tlb_ptr = &tlb;
+    }
+    PTentry pte = tlb_ptr->GetData(tmp.pt_index);
+    //hash collision
+    if(pte.valid){
+        collision_times ++;
+        tmp.is_collision = true;
+        tmp.rpt_index = pte.hex_cache_addr / granularity;
+        tmp.pte = pte;
+        tmp.pte.hex_addr_aligned = tmp.req_id;
+        //in case the collided cpage is at the head of fifo
+        if(cpage_head == tmp.pte.hex_cache_addr){
+            ProceedToNextFree(tmp.to_page_region);
+        }
+        InsertRemotePage(tmp);
+    }else{
+        non_collision_times ++;
+        AllocCPage(tmp);
+    }
+}
+
+void our::ProceedToNextFree(bool is_page_region) {
+    if(is_page_region)
+        v_hex_addr_cache += (4096);
+    else
+        v_hex_addr_cache_br -= 256;
+    if(v_hex_addr_cache_br < (v_hex_addr_cache + 4096)){
+        uint64_t page_region_sz = v_hex_addr_cache;
+        int ratio = page_region_sz / (hashmap_hex_addr / (uint64_t)16);
+        region_capacity_ratio[ratio] ++;
+
+        go_back_to_head++;
+        v_hex_addr_cache_br = hashmap_hex_addr - 256;
+        v_hex_addr_cache = 0;
+    }
 }
 
 void our::Drained() {
     tlb.Drained();
     rtlb.Drained();
+    tlb_block_region.Drained();
+    rtlb_block_region.Drained();
+
     if(!pending_req_to_PT.empty() && rtlb.WillAcceptTransaction()){
-        uint32_t value[128/32];
-        MurmurHash3_x64_128(&(*pending_req_to_PT.begin()), sizeof(uint64_t), 0, value);
-        uint32_t pt_index = value[0] % hash_page_table.size();
+        uint32_t pt_index = pending_req_to_PT.front().pt_index;
         if(tlb.AddTransaction(pt_index, false)){
-            PTentry pte = tlb.GetData(pt_index);
-            //hash collision
-            if(pte.valid){
-                collision_times ++;
-                intermediate_data tmp(pte.hex_cache_addr / granularity, pte, pt_index);
-                tmp.pte.hex_addr_aligned = pending_req_to_PT.front();
-                //in case the collided cpage is at the head of fifo
-                if(v_hex_addr_cache == tmp.pte.hex_cache_addr){
-                    v_hex_addr_cache += (granularity);
-                    v_hex_addr_cache %= (Meta_SRAM.size() * granularity);
-                }
-                InsertRemotePage(tmp);
-            }else{
-                non_collision_times ++;
-                AllocCPage(pt_index, pending_req_to_PT.front());
-            }
+            refill_to_page++;
+            intermediate_data data_ = pending_req_to_PT.front();
+            data_.pt_index = pt_index;
+            RefillToRegion(data_);
             pending_req_to_PT.pop_front();
+        }
+    }
+
+    if(!pending_req_to_PT_br.empty() && rtlb_block_region.WillAcceptTransaction()){
+        uint32_t value[128/32];
+        MurmurHash3_x64_128(&(*pending_req_to_PT_br.begin()), sizeof(uint64_t), 0, value);
+        uint32_t pt_index = value[0] % hash_page_table.size();
+        uint32_t pt_index_br = value[0] % hpt_block_region.size();
+        if(tlb_block_region.AddTransaction(pt_index_br, false)){
+            PTentry pte_br = tlb_block_region.GetData(pt_index_br);
+            /*
+            * the remote page is refill to page region
+            * if adjacent block exist or
+            * more than 1 reqs waiting in MSHR
+            * */
+            if(pte_br.valid && (pte_br.hex_addr_aligned / 4096 * 4096 == pending_req_to_PT_br.front())){
+                intermediate_data data_(pt_index, pending_req_to_PT_br.front());
+                data_.free_br = true;
+                data_.pt_index_br = pt_index_br;
+                data_.rpt_index_br = pte_br.hex_cache_addr / 256;
+                pending_req_to_PT.emplace_back(data_);
+                promotion_to_page ++;
+            }else if(MSHRs[pending_req_to_PT_br.front()].size() > 1){
+                pending_req_to_PT.emplace_back(intermediate_data(pt_index, pending_req_to_PT_br.front()));
+            }else{
+                refill_to_block ++;
+                intermediate_data data_(pt_index_br, pending_req_to_PT_br.front());
+                data_.to_page_region = false;
+                data_.req_id = MSHRs[pending_req_to_PT_br.front()].front().addr / 256 * 256;
+                RefillToRegion(data_);
+            }
+            pending_req_to_PT_br.pop_front();
         }
     }
 
@@ -263,22 +372,46 @@ void our::Drained() {
         if(CacheFrontEnd::ProcessOneReq(pending_req_to_Meta.front().hex_addr, pending_req_to_Meta.front().is_write,
                                         pending_req_to_Meta.front().t, pending_req_to_Meta.front().hex_addr_cache,
                                         pending_req_to_Meta.front().is_hit)){
-            pending_req_to_Meta.erase(pending_req_to_Meta.begin());
+            pending_req_to_Meta.pop_front();
+        }
+    }
+
+    if(!front_q_br.empty()){
+        uint32_t pt_index_br = front_q_br.front().pt_index_br;
+        if(tlb_block_region.AddTransaction(pt_index_br, false)){
+            Tag *t_br = NULL;
+            uint64_t hex_addr_cache_br;
+            bool is_hit_br = GetTag(front_q_br.front().hex_addr, t_br, hex_addr_cache_br, pt_index_br, false);
+            pending_req_to_Meta.emplace_back(intermediate_req(t_br, hex_addr_cache_br,
+                                                              front_q_br.front().hex_addr, front_q_br.front().is_write,
+                                                              is_hit_br));
+            //if(is_hit_br){
+            //    std::cout<<"hit in block region "<<front_q_br.front().hex_addr<<"\n";
+            //}else{
+            //    std::cout<<"miss "<<front_q_br.front().hex_addr<<"\n";
+            //}
+            front_q_br.pop_front();
         }
     }
 
     if(!front_q.empty()){
-        uint64_t hex_addr = (front_q.front().first / granularity) * granularity;
+        uint64_t hex_addr = (front_q.front().first / 4096) * 4096;
         uint32_t value[128/32];
         MurmurHash3_x64_128(&hex_addr, sizeof(uint64_t), 0, value);
         uint32_t pt_index = value[0] % hash_page_table.size();
+        uint32_t pt_index_br = value[0] % hpt_block_region.size();
         if(tlb.AddTransaction(pt_index, false)){
             Tag *t = NULL;
             uint64_t hex_addr_cache;
-            bool is_hit = GetTag(front_q.front().first, t, hex_addr_cache);
+            bool is_hit = GetTag(front_q.front().first, t, hex_addr_cache, pt_index, true);
 
-            pending_req_to_Meta.emplace_back(intermediate_req(t, hex_addr_cache,
+            if(is_hit){
+                pending_req_to_Meta.emplace_back(intermediate_req(t, hex_addr_cache,
                                                               front_q.front().first, front_q.front().second, is_hit));
+                //std::cout<<"hit in page region "<<front_q.front().first<<"\n";
+            }
+            else
+                front_q_br.emplace_back(intermediate_req(front_q.front().first, front_q.front().second, pt_index_br));
             front_q.erase(front_q.begin());
         }
     }
@@ -286,16 +419,25 @@ void our::Drained() {
     CacheFrontEnd::ProcessRefillReq();
 }
 
-void our::AllocCPage(uint32_t pt_index, uint64_t req_id) {
-    uint64_t index = v_hex_addr_cache / granularity;
-    intermediate_data tmp(index,
-                          PTentry(req_id, v_hex_addr_cache),
-                          pt_index);
+void our::AllocCPage(intermediate_data tmp) {
+    uint64_t cpage_head = v_hex_addr_cache_br;
+    uint64_t granularity = 256;
+    RPTCache *rtlb_ptr = &rtlb_block_region ;
+    if(tmp.to_page_region){
+        cpage_head = v_hex_addr_cache;
+        granularity = 4096;
+        rtlb_ptr = &rtlb;
+    }
+    uint64_t index = cpage_head / granularity;
+    tmp.rpt_index = index;
+    tmp.pte = PTentry(tmp.req_id, cpage_head);
 
-    rtlb.AddTransaction(index, false);
+    rtlb_ptr->AddTransaction(index, false);
     InsertRemotePage(tmp);
-    v_hex_addr_cache += (granularity);
-    v_hex_addr_cache %= hashmap_hex_addr;
+    ProceedToNextFree(tmp.to_page_region);
+
+    //v_hex_addr_cache += (granularity);
+    //v_hex_addr_cache %= hashmap_hex_addr;
 }
 
 uint64_t our::AllocCPage(uint64_t hex_addr, Tag *&tag_) {
@@ -304,96 +446,236 @@ uint64_t our::AllocCPage(uint64_t hex_addr, Tag *&tag_) {
     return 0;
 };
 
-void our::CheckHashPT() {
+void our::CheckHashPT(bool is_page_region) {
+    std::vector<PTentry> *hpt = &hpt_block_region;
+    if(is_page_region)
+        hpt = &hash_page_table;
+
     uint64_t valid_count = 0;
-    for (auto i = hash_page_table.begin(); i != hash_page_table.end(); ++i) {
+    for (auto i = hpt->begin(); i != hpt->end(); ++i) {
         if(i->valid)
             valid_count++;
-        if(valid_count > hash_page_table.size() / 2){
-            std::cerr<<"we forget to release some pte\n";
+        if(valid_count > hpt->size() / 2){
+            std::cerr<<"we forget to release some pte of "<<(is_page_region ? "page region\n" : "block region\n");
             AbruptExit(__FILE__, __LINE__);
         }
     }
 }
 
 void our::InsertRemotePage(intermediate_data tmp) {
+    //std::cout<<"refill "<<tmp.pte.hex_addr_aligned<<"to "<<(tmp.to_page_region ? "page region" : "block region")
+   //         <<"at "<<tmp.pte.hex_cache_addr<<"\n";
+    uint64_t granularity = 256;
+    RPTCache *rtlb_ptr = &rtlb_block_region;
+    SRAMCache<PTentry> *tlb_ptr = &tlb_block_region;
+    std::vector<Tag> *meta_ptr = &meta_block_region;
+    if(tmp.to_page_region){
+        granularity = 4096;
+        rtlb_ptr = &rtlb;
+        tlb_ptr = &tlb;
+        meta_ptr = &Meta_SRAM;
+    }
+
     //invalidate old pte
-    RPTentry rpte = rtlb.GetData(tmp.rpt_index);
-    if(rpte.valid && rpte.pt_index != tmp.pt_index){
-        PTentry e;
-        tlb.AddTransaction(rpte.pt_index, true, e);
-        CheckHashPT();
+    if(!tmp.is_collision){
+        RPTentry rpte = rtlb_ptr->GetData(tmp.rpt_index);
+        if(rpte.valid){
+            tlb_ptr->AddTransaction(rpte.pt_index, true, PTentry());
+        }else{
+            //free page occupied by page region
+            if(!tmp.to_page_region){
+                uint64_t rpt_index_page = tmp.rpt_index / (4096 / 256);
+                rtlb.AddTransaction(rpt_index_page, false);
+                rpte = rtlb.GetData(rpt_index_page);
+                if(rpte.valid){
+                    tlb.AddTransaction(rpte.pt_index, true, PTentry());
+                    rtlb.AddTransaction(rpt_index_page, true, RPTentry());
+                }
+            }
+
+            //free blocks occupied by block region
+            if(tmp.to_page_region){
+                for (int i = 0; i < (4096 / 256); ++i) {
+                    uint64_t rpt_index_block = tmp.rpt_index * (4096 / 256) + i;
+                    rtlb_block_region.AddTransaction(rpt_index_block, false);
+                    rpte = rtlb_block_region.GetData(rpt_index_block);
+                    if(rpte.valid){
+                        tlb_block_region.AddTransaction(rpte.pt_index, true, PTentry());
+                        rtlb_block_region.AddTransaction(rpt_index_block, true, RPTentry());
+                    }
+                }
+            }
+        }
+        //CheckHashPT(tmp.to_page_region);
+    }
+
+    //free block that moved to page region
+    if(tmp.free_br){
+        tlb_block_region.AddTransaction(tmp.pt_index_br, true, PTentry());
+        rtlb_block_region.AddTransaction(tmp.rpt_index_br, true, RPTentry());
     }
 
     //update RPT
-    rtlb.AddTransaction(tmp.rpt_index, true, RPTentry(tmp.pt_index));
+    rtlb_ptr->AddTransaction(tmp.rpt_index, true, RPTentry(tmp.pt_index));
 
     //write page table
-    tlb.AddTransaction(tmp.pt_index, true, tmp.pte);
+    tlb_ptr->AddTransaction(tmp.pt_index, true, tmp.pte);
     uint64_t index = tmp.pte.hex_cache_addr / granularity;
-    CacheFrontEnd::DoRefill(tmp.pte.hex_addr_aligned, Meta_SRAM[index], tmp.pte.hex_cache_addr);
+    uint64_t hex_addr_remote = tmp.pte.hex_addr_aligned / 4096 * 4096;
+    CacheFrontEnd::DoRefill( hex_addr_remote, (*meta_ptr)[index], tmp.pte.hex_cache_addr, tmp.pte.hex_addr_aligned);
 }
 
 uint64_t our::GetHexTag(uint64_t hex_addr) {
-    return hex_addr / granularity * granularity;
+    return hex_addr;
+}
+
+void our::RefillToRegionWarmUp(intermediate_data tmp, bool is_write) {
+    uint64_t granularity = 256;
+    uint64_t cpage_head = v_hex_addr_cache_br;
+    RPTCache *rtlb_ptr = &rtlb_block_region;
+    SRAMCache<PTentry> *tlb_ptr = &tlb_block_region;
+    std::vector<Tag> *meta_ptr = &meta_block_region;
+    if(tmp.to_page_region){
+        granularity = 4096;
+        cpage_head = v_hex_addr_cache;
+        rtlb_ptr = &rtlb;
+        tlb_ptr = &tlb;
+        meta_ptr = &Meta_SRAM;
+    }
+
+    if(!tmp.pte.valid){
+        uint64_t index = cpage_head / granularity;
+        tmp.rpt_index = index;
+        tmp.pte.hex_cache_addr = cpage_head;
+        if(tmp.to_page_region)
+            v_hex_addr_cache += (4096);
+        else
+            v_hex_addr_cache_br -= 256;
+        if(v_hex_addr_cache_br <= v_hex_addr_cache){
+            v_hex_addr_cache_br = hashmap_hex_addr - 256;
+            v_hex_addr_cache = 0;
+        }
+
+        //clear old pte
+        rtlb_ptr->WarmUp(index, false);
+        RPTentry rpte = rtlb_ptr->GetData(index);
+        if(rpte.valid){
+            tlb_ptr->WarmUp(rpte.pt_index, true, PTentry());
+        }else{
+            //free page occupied by block region
+            if(!tmp.to_page_region){
+                uint64_t rpt_index_page = tmp.rpt_index / (4096 / 256);
+                rtlb.WarmUp(rpt_index_page, false);
+                rpte = rtlb.GetData(rpt_index_page);
+                if(rpte.valid){
+                    tlb.WarmUp(rpte.pt_index, true, PTentry());
+                    rtlb.WarmUp(rpt_index_page, true, RPTentry());
+                }
+            }
+
+            //free blocks occupied by page region
+            if(tmp.to_page_region){
+                for (int i = 0; i < (4096 / 256); ++i) {
+                    uint64_t rpt_index_block = tmp.rpt_index * (4096 / 256) + i;
+                    rtlb_block_region.WarmUp(rpt_index_block, false);
+                    rpte = rtlb_block_region.GetData(rpt_index_block);
+                    if(rpte.valid){
+                        tlb_block_region.WarmUp(rpte.pt_index, true, PTentry());
+                        rtlb_block_region.WarmUp(rpt_index_block, true, RPTentry());
+                    }
+                }
+            }
+        }
+    }else{
+        tmp.rpt_index = tmp.pte.hex_cache_addr / granularity;
+    }
+
+    //free block that moved to page region
+    if(tmp.free_br){
+        tlb_block_region.WarmUp(tmp.pt_index_br, true, PTentry());
+        rtlb_block_region.WarmUp(tmp.rpt_index_br, true, RPTentry());
+    }
+
+    //update RPT
+    rtlb_ptr->WarmUp(tmp.rpt_index, true, RPTentry(tmp.pt_index));
+
+    //write page table
+    tmp.pte.valid = true;
+    tmp.pte.hex_addr_aligned = tmp.req_id / granularity * granularity;
+    tlb_ptr->AddTransaction(tmp.pt_index, true, tmp.pte);
+
+    //warm up Meta
+    tracker_->ResetTag(((*meta_ptr)[tmp.rpt_index]), tmp.req_id / granularity * granularity);
+    tracker_->AddTransaction(tmp.req_id % granularity, is_write, (*meta_ptr)[tmp.rpt_index]);
 }
 
 void our::WarmUp(uint64_t hex_addr, bool is_write) {
-    uint64_t hex_addr_aligned = hex_addr / granularity * granularity;
+    uint64_t hex_addr_aligned = hex_addr / 4096 * 4096;
     uint32_t value[128/32];
     MurmurHash3_x64_128(&hex_addr_aligned, sizeof(uint64_t), 0, value);
     uint32_t pt_index = value[0] % hash_page_table.size();
+    uint32_t pt_index_br = value[0] % hpt_block_region.size();
     //warm up tlb and page table
     PTentry e =  tlb.WarmUp(pt_index, false);
+    PTentry e_br = tlb_block_region.WarmUp(pt_index_br, false);
 
-    //hit
+    //hit in page region
     if(e.valid && e.hex_addr_aligned == hex_addr_aligned){
-        uint64_t index = e.hex_cache_addr / granularity;
-        Meta_SRAM[index].dirty |= is_write;
+        uint64_t index = e.hex_cache_addr / 4096;
+        tracker_->AddTransaction(hex_addr % 4096, is_write, Meta_SRAM[index]);
         return;
     }
 
-    //miss and hash collision
-    uint64_t index;
-    if(e.valid){
-        index = e.hex_cache_addr / granularity;
-        e.hex_addr_aligned = hex_addr_aligned;
-        tlb.WarmUp(pt_index, true, e);
-    }else{
-        index = v_hex_addr_cache / granularity;
-        //clear old pte
-        RPTentry rpte = rtlb.GetData(index);
-        if(rpte.valid){
-            e.valid = false;
-            e.hex_cache_addr = e.hex_addr_aligned = 0;
-            tlb.WarmUp(rpte.pt_index, true, e);
-        }
-
-        //set up new pte
-        e.valid = true;
-        e.hex_addr_aligned = hex_addr_aligned;
-        e.hex_cache_addr = v_hex_addr_cache;
-        tlb.WarmUp(pt_index, true, e);
-
-        //update RPT
-        rtlb.WarmUp(index, true, RPTentry(pt_index));
-
-        v_hex_addr_cache += (granularity);
-        v_hex_addr_cache %= (Meta_SRAM.size() * granularity);
+    //hit in block region
+    if(e_br.valid && e_br.hex_addr_aligned == (hex_addr / 256 * 256)){
+        uint64_t index = e_br.hex_cache_addr / 256;
+        tracker_->AddTransaction(hex_addr % 256, is_write, meta_block_region[index]);
+        return;
     }
 
-    //warm up Meta
-    Meta_SRAM[index] = Tag(GetHexTag(hex_addr), true, is_write, granularity);
-    if(granularity > 256)
-        Meta_SRAM[index].accessed[(hex_addr % granularity) / 256] = true;
+    //miss and choose region to refill
+    intermediate_data data_;
+    if(e_br.valid && (e_br.hex_addr_aligned / 4096) == (hex_addr / 4096)){
+        data_.to_page_region = true;
+        data_.pte = e;
+        data_.pt_index = pt_index;
+        data_.req_id = hex_addr;
+        data_.pt_index_br = pt_index_br;
+        data_.rpt_index_br = e_br.hex_cache_addr / 256;
+        data_.free_br = true;
+        data_.valid = true;
+    }else{
+        data_.to_page_region = false;
+        data_.pte = e_br;
+        data_.pt_index = pt_index_br;
+        data_.req_id = hex_addr;
+        data_.valid = true;
+    }
+    RefillToRegionWarmUp(data_, is_write);
+
 }
 
 void our::PrintStat() {
 
-    utilization_file<<"hashmap collision time: "<<collision_times<<"\n"
-                    <<"non collision time: "<<non_collision_times<<"\n"
-                    <<"TLB hit: "<<tlb.hit_<<"\n"
-                    <<"TLB miss: "<<tlb.miss_<<"\n";
+    utilization_file<<"# hashmap collision time: "<<collision_times<<"\n"
+                    <<"# non collision time: "<<non_collision_times<<"\n"
+                    <<"# page region TLB hit: "<<tlb.hit_<<"\n"
+                    <<"# TLB miss: "<<tlb.miss_<<"\n"
+                    <<"# RTLB hit: "<<rtlb.hit_<<"\n"
+                    <<"# RTLB miss: "<<rtlb.miss_<<"\n"
+                    <<"# block region TLB hit: "<<tlb_block_region.hit_<<"\n"
+                    <<"# TLB miss: "<<tlb_block_region.miss_<<"\n"
+                    <<"# RTLB hit: "<<rtlb_block_region.hit_<<"\n"
+                    <<"# RTLB miss: "<<rtlb_block_region.miss_<<"\n"
+                    <<"# times of refilling to page: "<<refill_to_page<<"\n"
+                    <<"# times of promotion to page: "<<promotion_to_page<<"\n"
+                    <<"# times of refilling to block: "<<refill_to_block<<"\n"
+                    <<"# times of go back to head: "<<go_back_to_head<<"\n";
+
+    std::cout<<"the distribution of the ratio of page region: \n";
+    for (int i = 0; i < 16; ++i) {
+        std::cout<<i+1<<"\t"<<region_capacity_ratio[i]<<"\n";
+    }
 
     CacheFrontEnd::PrintStat();
 }
@@ -403,26 +685,35 @@ RPTCache::RPTCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint6
                    RPT_hex_addr(hex_base), rpte_size(sz), RPT_hex_addr_h(hex_base + capacity * sz){
     data_backup = data_backup_;
     dram = dram_;
+    max_tag_sz = 4;
+    hit_ = 0;
+    miss_ = 0;
     std::cout<<"RPT base: "<<RPT_hex_addr<<"\n"
             <<"RPT high: "<<RPT_hex_addr_h<<"\n";
 }
 
 void RPTCache::AddTransaction(uint64_t hex_offset, bool is_write, RPTentry dptr) {
     uint64_t hex_addr = RPT_hex_addr + hex_offset * rpte_size;
+    //if(hex_addr == 67591744){
+    //    std::cerr<<"debug_from here\n";
+    //}
     if(is_write){
         //update RPT
         (*data_backup)[hex_offset] = dptr;
-        if((hex_offset * rpte_size / 64) != tag)
+        if(tag.end() == std::find(tag.begin(), tag.end(), hex_offset * rpte_size / 64))
             pending_req_to_RPT.emplace_back(std::make_pair(hex_addr, true));
     }else{
-        bool prefetched = hex_offset * rpte_size % 64 != 0;
-        if(!prefetched){
-            tag = hex_offset * rpte_size / 64;
+        if(std::find(tag.begin(), tag.end(), hex_offset * rpte_size / 64) == tag.end()){
+            miss_++;
             pending_req_to_RPT.emplace_back(std::make_pair(hex_addr, false));
-            if(hex_addr == RPT_hex_addr)
-                pending_req_to_RPT.emplace_back(std::make_pair(RPT_hex_addr_h - 64, true));
-            else
-                pending_req_to_RPT.emplace_back(std::make_pair(hex_offset - 64, true));
+            if(tag.size() == max_tag_sz){
+                CacheAddr hex_addr_cache = RPT_hex_addr + (tag.front()) * 64;
+                pending_req_to_RPT.emplace_back(std::make_pair(hex_addr_cache, true));
+                tag.pop_front();
+            }
+            tag.emplace_back(hex_offset * rpte_size / 64);
+        }else{
+            hit_++;
         }
     }
 }
@@ -457,7 +748,9 @@ RPTentry RPTCache::GetData(uint64_t hex_offset) {
 
 RPTentry RPTCache::WarmUp(uint64_t hex_offset, bool is_write, RPTentry dptr) {
     if(!is_write){
-        tag = hex_offset * rpte_size / 64;
+        if(tag.size() == max_tag_sz)
+            tag.pop_front();
+        tag.emplace_back(hex_offset * rpte_size / 64);
     }else{
         (*data_backup)[hex_offset] = dptr;
     }

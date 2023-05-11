@@ -58,11 +58,12 @@ class SRAMCache{
   public:
     SRAMCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
               std::vector<dType> *data_backup_);
+    SRAMCache(){};
     ~SRAMCache(){};
     //hit return true
     bool AddTransaction(uint64_t hex_offset, bool is_write, dType dptr = dType());
     void Drained();
-    void DRAMReadBack(CacheAddr req_id);
+    bool DRAMReadBack(CacheAddr req_id);
     dType GetData(uint64_t hex_offset);
     dType WarmUp(uint64_t hex_offset, bool is_write, dType dptr = dType());
 };
@@ -70,7 +71,7 @@ class SRAMCache{
 /*
  * one-port cache
  * take advantage of stream accessing pattern of reversed page table
- * read: prefetch 8 RPTe at a time
+ * all-connected cache with 4 entry
  * write through if miss
  * */
 class RPTCache {
@@ -81,8 +82,13 @@ class RPTCache {
     std::vector<RPTentry> *data_backup;
     JedecDRAMSystem *dram;
     std::list<std::pair<CacheAddr, bool>> pending_req_to_RPT;
-    std::set<CacheAddr> waiting_resp_RPT;
-    CacheAddr tag;
+    std::unordered_set<CacheAddr> waiting_resp_RPT;
+    std::list<CacheAddr> tag;
+    uint32_t max_tag_sz;
+
+    uint64_t hit_;
+    uint64_t miss_;
+    friend class our;
 
   public:
     RPTCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
@@ -99,7 +105,7 @@ class RPTCache {
 
 class our : public CacheFrontEnd{
   private:
-    const uint64_t granularity;
+    //const uint64_t granularity;
     const CacheAddr hashmap_hex_addr;
     const uint32_t pte_size;
     class intermediate_data{
@@ -108,9 +114,19 @@ class our : public CacheFrontEnd{
         PTentry pte;
         uint32_t pt_index;
         bool valid;
-        intermediate_data(uint32_t rpt_index_, PTentry pte_, uint32_t pt_index_):
-        rpt_index(rpt_index_), pte(pte_), pt_index(pt_index_){ valid = true;};
-        intermediate_data(){ valid = false;};
+        bool is_collision = false;
+        //used when decided to refill to page region
+        uint64_t req_id;
+        bool to_page_region;
+        //used when free partial data in block region
+        bool free_br;
+        uint32_t pt_index_br;
+        uint32_t rpt_index_br;
+        //intermediate_data(uint32_t rpt_index_, PTentry pte_, uint32_t pt_index_):
+        //rpt_index(rpt_index_), pte(pte_), pt_index(pt_index_){ valid = true; free_br = false;};
+        intermediate_data(uint32_t pt_index_, uint64_t req_id_): pt_index(pt_index_), req_id(req_id_)
+        {valid = true; free_br = false; to_page_region = true;};
+        intermediate_data(){ valid = false; free_br = false;};
     };
     class intermediate_req{
         public:
@@ -119,8 +135,11 @@ class our : public CacheFrontEnd{
         uint64_t hex_addr;
         bool is_write;
         bool is_hit;
+        uint32_t pt_index_br;
         intermediate_req(Tag *t_, uint64_t hex_addr_cache_, uint64_t hex_addr_, bool is_write_, bool is_hit_):
         t(t_), hex_addr_cache(hex_addr_cache_), hex_addr(hex_addr_), is_write(is_write_), is_hit(is_hit_){};
+        intermediate_req(uint64_t hex_addr_, bool is_write_, uint32_t pt_index_br_):
+        hex_addr(hex_addr_), is_write(is_write_),pt_index_br(pt_index_br_){};
         intermediate_req(){};
     };
     std::vector<PTentry> hash_page_table;
@@ -129,13 +148,38 @@ class our : public CacheFrontEnd{
     RPTCache rtlb;
     uint64_t v_hex_addr_cache;
     std::list<intermediate_req> pending_req_to_Meta;
-    std::list<uint64_t> pending_req_to_PT;
+    std::list<intermediate_data> pending_req_to_PT;
     void InsertRemotePage(intermediate_data tmp);
-    void AllocCPage(uint32_t pt_index, uint64_t req_id);
+    void AllocCPage(intermediate_data tmp);
+    bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache, uint32_t pt_index, bool is_page_region);
+    void RefillToRegion(intermediate_data tmp);
+    void RefillToRegionWarmUp(intermediate_data tmp, bool is_write);
+    void ProceedToNextFree(bool is_page_region);
+    //void ProceedToNextFreeBR();
+
+    /*
+     * structure for block region
+     * they can be merged with meta of page region
+     * we temporarily separate them for simulation
+     * */
+    const CacheAddr hashmap_hex_addr_block_region;
+    std::vector<Tag> meta_block_region;
+    std::vector<PTentry> hpt_block_region;
+    SRAMCache<PTentry> tlb_block_region;
+    std::vector<RPTentry> rpt_block_region;
+    RPTCache rtlb_block_region;
+    uint64_t v_hex_addr_cache_br;
+    std::list<uint64_t> pending_req_to_PT_br;
+    std::list<intermediate_req> front_q_br;
 
     uint64_t collision_times;
     uint64_t non_collision_times;
-    void CheckHashPT();
+    uint64_t refill_to_page;
+    uint64_t refill_to_block;
+    uint64_t go_back_to_head;
+    uint64_t promotion_to_page;
+    SimpleStats::HistoCount region_capacity_ratio;
+    void CheckHashPT(bool is_page_region);
 
   protected:
     bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;

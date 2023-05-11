@@ -163,11 +163,11 @@ void CacheFrontEnd::CacheReadCallBack(uint64_t req_id) {
     HashReadCallBack(req_id);
 }
 
-void CacheFrontEnd::DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache) {
+void CacheFrontEnd::DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache, uint64_t hex_addr) {
     auto reqs = MSHRs[req_id];
     MSHRs.erase(req_id);
     MSHR_sz -= reqs.size();
-    uint64_t tag = GetHexTag(req_id);
+    uint64_t tag = GetHexTag(hex_addr);
 
     bool refill_buffer_miss = std::find(refill_buffer.begin(), refill_buffer.end(), hex_addr_cache)
             == refill_buffer.end();
@@ -221,7 +221,7 @@ void CacheFrontEnd::DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache) {
 void CacheFrontEnd::Refill(uint64_t req_id) {
     Tag *t = NULL;
     uint64_t hex_addr_cache = AllocCPage(req_id, t);
-    DoRefill(req_id, *t, hex_addr_cache);
+    DoRefill(req_id, *t, hex_addr_cache, req_id);
 }
 
 void CacheFrontEnd::WarmUp(uint64_t hex_addr, bool is_write) {
