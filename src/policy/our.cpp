@@ -154,7 +154,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our");
+    utilization_file.open(output_dir+"/utilization_our_v3");
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -231,7 +231,7 @@ bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache, uint32
             hex_addr_cache = index * granularity_ + hex_addr % granularity_;
             return true;
         }else{
-            std::cerr<<"we do not have PT hit but cache miss for now\n";
+            std::cerr<<"we do not have PT hit but cache miss for now "<<hex_addr<<"\n";
             AbruptExit(__FILE__, __LINE__);
         }
     }
@@ -251,13 +251,58 @@ bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
  * */
 void our::MissHandler(uint64_t hex_addr, bool is_write) {
     MSHR_sz ++;
-    uint64_t hex_addr_remote = hex_addr / 4096 * 4096;
-    if(MSHRs.find(hex_addr_remote) != MSHRs.end()){
-        MSHRs[hex_addr_remote].emplace_back(Transaction(hex_addr, is_write));
+    bool is_first = false;
+    uint64_t hex_addr_page = hex_addr / 4096 * 4096;
+    uint64_t hex_addr_block = hex_addr / 256 * 256;
+    auto mshr_ptr = std::find_if(CacheFrontEnd::MSHRs.begin(), CacheFrontEnd::MSHRs.end(),
+                                 [hex_addr_page](std::pair<uint64_t, std::list<Transaction>> a){
+        return a.first / 4096 * 4096 == hex_addr_page;
+    });
+    if(mshr_ptr == CacheFrontEnd::MSHRs.end()){
+        is_first = true;
+    }
+
+    uint32_t value[128/32];
+    MurmurHash3_x64_128(&(hex_addr_page), sizeof(uint64_t), 0, value);
+    if(is_first){
+        CacheFrontEnd::MSHRs[hex_addr_block] = std::list<Transaction>{Transaction(hex_addr, is_write)};
+        fetch_engine_q.emplace_back(intermediate_req(hex_addr, is_write, value[0]));
+        return;
+    }
+
+    auto mshr_ptr_2 = std::find_if(MSHRs.begin(), MSHRs.end(),
+                                 [hex_addr_page](std::pair<uint64_t, MSHR> a){
+        return a.first / 4096 * 4096 == hex_addr_page;
+    });
+
+    if(mshr_ptr_2 != MSHRs.end() && mshr_ptr_2->second.is_page_region){
+        CacheFrontEnd::MSHRs[hex_addr_page].emplace_back(Transaction(hex_addr, is_write));
+    }else if(mshr_ptr_2 != MSHRs.end()){
+        //send 256
+        /*
+        * the remote page is fetched and refill to page region
+        * if more than 1 reqs waiting in MSHR
+        * */
+        //resend a req to fetch page
+        LSQ.emplace_back(RemoteRequest(false, hex_addr_page, 4096 / 64, 0));
+        auto reqs = mshr_ptr->second;
+        //remove old MSHR
+        CacheFrontEnd::MSHRs.erase(mshr_ptr);
+        MSHRs.erase(mshr_ptr_2);
+        //set up new MSHR
+        MSHRs[hex_addr_page] = MSHR(true, value[0] % hash_page_table.size());
+        reqs.emplace_back(Transaction(hex_addr, is_write));
+        CacheFrontEnd::MSHRs[hex_addr_page] = reqs;
     }else{
-        MSHRs[hex_addr_remote] = std::list<Transaction>{Transaction(hex_addr, is_write)};
-        LSQ.emplace_back(RemoteRequest(false, hex_addr_remote,
-                                   4096 / 64, 0));
+        //the block data has already returned
+        if(std::find_if(pending_req_to_PT_br.begin(), pending_req_to_PT_br.end(), [hex_addr_page](intermediate_data d){
+            return d.req_id / 4096 * 4096 == hex_addr_page;
+        }) != pending_req_to_PT_br.end()){
+            std::cerr<<"the adjacent block data has already returned "<<hex_addr<<"\n";
+            AbruptExit(__FILE__, __LINE__);
+        }
+        //not send
+        mshr_ptr->second.emplace_back(Transaction(hex_addr, is_write));
     }
 }
 
@@ -271,8 +316,49 @@ void our::WriteBackData(Tag tag_, uint64_t hex_addr_cache) {
     );
 }
 
+bool our::CheckOtherBuffer(uint64_t hex_addr, bool is_write) {
+    uint64_t hex_addr_remote = hex_addr / 4096 * 4096;
+    uint64_t hex_addr_block = hex_addr / 256 * 256;
+    if(MSHRs.find(hex_addr_remote) != MSHRs.end()){
+        if(MSHRs[hex_addr_remote].pte_br.valid && MSHRs[hex_addr_remote].pte_br.hex_addr_aligned == hex_addr_block){
+            MSHRs[hex_addr_remote].is_dirty |= is_write;
+            return true;
+        }
+    }
+
+    //we set commit point for returned data as modification on MSHR or MissHandler
+    if(std::find_if(pending_req_to_PT_br.begin(), pending_req_to_PT_br.end(), [hex_addr_block](intermediate_data a){
+        return a.req_id == hex_addr_block;
+    }) != pending_req_to_PT_br.end()){
+        return true;
+    }
+
+    if(std::find_if(pending_req_to_PT.begin(), pending_req_to_PT.end(), [hex_addr_remote](intermediate_data a){
+        return a.req_id == hex_addr_remote;
+    }) != pending_req_to_PT.end()){
+        return true;
+    }
+
+    return false;
+}
+
 void our::Refill(uint64_t req_id) {
-    pending_req_to_PT_br.emplace_back(req_id);
+    if(MSHRs.find(req_id) != MSHRs.end()){
+        if(MSHRs[req_id].is_page_region){
+            pending_req_to_PT.emplace_back(intermediate_data(MSHRs[req_id].pt_index, req_id));
+            //update fetched page if data is dirty
+            //if(MSHRs[req_id].is_dirty && MSHRs[req_id].pte_br.valid){
+            //    CacheFrontEnd::MSHRs[req_id].emplace_back(
+            //            Transaction(MSHRs[req_id].pte_br.hex_addr_aligned, true));
+            //}
+        }else{
+            pending_req_to_PT_br.emplace_back(intermediate_data(MSHRs[req_id].pt_index, req_id));
+        }
+        MSHRs.erase(req_id);
+    }else{
+        //the req has been promoted to page region
+        promotion_to_page ++;
+    }
 }
 
 void our::RefillToRegion(intermediate_data tmp) {
@@ -330,41 +416,63 @@ void our::Drained() {
         if(tlb.AddTransaction(pt_index, false)){
             refill_to_page++;
             intermediate_data data_ = pending_req_to_PT.front();
-            data_.pt_index = pt_index;
             RefillToRegion(data_);
             pending_req_to_PT.pop_front();
         }
     }
 
     if(!pending_req_to_PT_br.empty() && rtlb_block_region.WillAcceptTransaction()){
-        uint32_t value[128/32];
-        MurmurHash3_x64_128(&(*pending_req_to_PT_br.begin()), sizeof(uint64_t), 0, value);
-        uint32_t pt_index = value[0] % hash_page_table.size();
-        uint32_t pt_index_br = value[0] % hpt_block_region.size();
+        uint32_t pt_index_br = pending_req_to_PT_br.front().pt_index;
+        if(tlb_block_region.AddTransaction(pt_index_br, false)){
+            refill_to_block ++;
+            intermediate_data data_ = pending_req_to_PT_br.front();
+            data_.to_page_region = false;
+            RefillToRegion(data_);
+            pending_req_to_PT_br.pop_front();
+        }
+    }
+
+    if(!fetch_engine_q.empty()){
+        uint32_t pt_index_br = fetch_engine_q.front().pt_index_br % hpt_block_region.size();
+        uint32_t pt_index = fetch_engine_q.front().pt_index_br % hash_page_table.size();
         if(tlb_block_region.AddTransaction(pt_index_br, false)){
             PTentry pte_br = tlb_block_region.GetData(pt_index_br);
+            uint64_t hex_addr_page = fetch_engine_q.front().hex_addr / 4096 * 4096;
+            uint64_t hex_addr_block = fetch_engine_q.front().hex_addr / 256 * 256;
             /*
-            * the remote page is refill to page region
-            * if adjacent block exist or
-            * more than 1 reqs waiting in MSHR
+            * the remote page is fetched and refill to page region
+            * if adjacent block exist
             * */
-            if(pte_br.valid && (pte_br.hex_addr_aligned / 4096 * 4096 == pending_req_to_PT_br.front())){
-                intermediate_data data_(pt_index, pending_req_to_PT_br.front());
-                data_.free_br = true;
-                data_.pt_index_br = pt_index_br;
-                data_.rpt_index_br = pte_br.hex_cache_addr / 256;
-                pending_req_to_PT.emplace_back(data_);
-                promotion_to_page ++;
-            }else if(MSHRs[pending_req_to_PT_br.front()].size() > 1){
-                pending_req_to_PT.emplace_back(intermediate_data(pt_index, pending_req_to_PT_br.front()));
-            }else{
-                refill_to_block ++;
-                intermediate_data data_(pt_index_br, pending_req_to_PT_br.front());
-                data_.to_page_region = false;
-                data_.req_id = MSHRs[pending_req_to_PT_br.front()].front().addr / 256 * 256;
-                RefillToRegion(data_);
+            bool send_page = false;
+            if(pte_br.valid && (pte_br.hex_addr_aligned / 4096 * 4096 == hex_addr_page)){
+                send_page = true;
             }
-            pending_req_to_PT_br.pop_front();
+            else if(CacheFrontEnd::MSHRs[hex_addr_block].size() > 1){
+                send_page = true;
+            }
+            else{
+                MSHRs[hex_addr_block] = MSHR(false, pt_index_br);
+                LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
+            }
+
+            if(send_page){
+                //send a req to fetch page
+                LSQ.emplace_back(RemoteRequest(false, hex_addr_page, 4096 / 64, 0));
+                auto reqs = CacheFrontEnd::MSHRs[hex_addr_block];
+                //remove old MSHR
+                CacheFrontEnd::MSHRs.erase(hex_addr_block);
+                //set up new MSHR
+                MSHRs[hex_addr_page] = MSHR(true, pt_index);
+                CacheFrontEnd::MSHRs[hex_addr_page] = reqs;
+                if(pte_br.valid && (pte_br.hex_addr_aligned / 4096 * 4096 == hex_addr_page)){
+                    //invalidate data in block region
+                    MSHRs[hex_addr_page].pte_br = pte_br;
+                    MSHRs[hex_addr_page].is_dirty = meta_block_region[pte_br.hex_cache_addr / 256].dirty;
+                    tlb_block_region.AddTransaction(pt_index_br, true, PTentry());
+                    rtlb_block_region.AddTransaction(pte_br.hex_cache_addr / 256, true, RPTentry());
+                }
+            }
+            fetch_engine_q.pop_front();
         }
     }
 
@@ -385,11 +493,6 @@ void our::Drained() {
             pending_req_to_Meta.emplace_back(intermediate_req(t_br, hex_addr_cache_br,
                                                               front_q_br.front().hex_addr, front_q_br.front().is_write,
                                                               is_hit_br));
-            //if(is_hit_br){
-            //    std::cout<<"hit in block region "<<front_q_br.front().hex_addr<<"\n";
-            //}else{
-            //    std::cout<<"miss "<<front_q_br.front().hex_addr<<"\n";
-            //}
             front_q_br.pop_front();
         }
     }
@@ -509,19 +612,13 @@ void our::InsertRemotePage(intermediate_data tmp) {
         //CheckHashPT(tmp.to_page_region);
     }
 
-    //free block that moved to page region
-    if(tmp.free_br){
-        tlb_block_region.AddTransaction(tmp.pt_index_br, true, PTentry());
-        rtlb_block_region.AddTransaction(tmp.rpt_index_br, true, RPTentry());
-    }
-
     //update RPT
     rtlb_ptr->AddTransaction(tmp.rpt_index, true, RPTentry(tmp.pt_index));
 
     //write page table
     tlb_ptr->AddTransaction(tmp.pt_index, true, tmp.pte);
     uint64_t index = tmp.pte.hex_cache_addr / granularity;
-    uint64_t hex_addr_remote = tmp.pte.hex_addr_aligned / 4096 * 4096;
+    uint64_t hex_addr_remote = tmp.pte.hex_addr_aligned;
     CacheFrontEnd::DoRefill( hex_addr_remote, (*meta_ptr)[index], tmp.pte.hex_cache_addr, tmp.pte.hex_addr_aligned);
 }
 
@@ -551,7 +648,7 @@ void our::RefillToRegionWarmUp(intermediate_data tmp, bool is_write) {
             v_hex_addr_cache += (4096);
         else
             v_hex_addr_cache_br -= 256;
-        if(v_hex_addr_cache_br <= v_hex_addr_cache){
+        if(v_hex_addr_cache_br < (v_hex_addr_cache + 4096)){
             v_hex_addr_cache_br = hashmap_hex_addr - 256;
             v_hex_addr_cache = 0;
         }
@@ -590,19 +687,13 @@ void our::RefillToRegionWarmUp(intermediate_data tmp, bool is_write) {
         tmp.rpt_index = tmp.pte.hex_cache_addr / granularity;
     }
 
-    //free block that moved to page region
-    if(tmp.free_br){
-        tlb_block_region.WarmUp(tmp.pt_index_br, true, PTentry());
-        rtlb_block_region.WarmUp(tmp.rpt_index_br, true, RPTentry());
-    }
-
     //update RPT
     rtlb_ptr->WarmUp(tmp.rpt_index, true, RPTentry(tmp.pt_index));
 
     //write page table
     tmp.pte.valid = true;
     tmp.pte.hex_addr_aligned = tmp.req_id / granularity * granularity;
-    tlb_ptr->AddTransaction(tmp.pt_index, true, tmp.pte);
+    tlb_ptr->WarmUp(tmp.pt_index, true, tmp.pte);
 
     //warm up Meta
     tracker_->ResetTag(((*meta_ptr)[tmp.rpt_index]), tmp.req_id / granularity * granularity);
@@ -636,23 +727,21 @@ void our::WarmUp(uint64_t hex_addr, bool is_write) {
     //miss and choose region to refill
     intermediate_data data_;
     if(e_br.valid && (e_br.hex_addr_aligned / 4096) == (hex_addr / 4096)){
+        //free block that moved to page region
+        tlb_block_region.WarmUp(pt_index_br, true, PTentry());
+        rtlb_block_region.WarmUp(e_br.hex_cache_addr / 256, true, RPTentry());
+
         data_.to_page_region = true;
         data_.pte = e;
         data_.pt_index = pt_index;
-        data_.req_id = hex_addr;
-        data_.pt_index_br = pt_index_br;
-        data_.rpt_index_br = e_br.hex_cache_addr / 256;
-        data_.free_br = true;
-        data_.valid = true;
     }else{
         data_.to_page_region = false;
         data_.pte = e_br;
         data_.pt_index = pt_index_br;
-        data_.req_id = hex_addr;
-        data_.valid = true;
     }
+    data_.req_id = hex_addr;
+    data_.valid = true;
     RefillToRegionWarmUp(data_, is_write);
-
 }
 
 void our::PrintStat() {
@@ -724,7 +813,13 @@ bool RPTCache::WillAcceptTransaction() {
 
 void RPTCache::Drained() {
     if(!pending_req_to_RPT.empty()){
-        if(dram->JedecDRAMSystem::WillAcceptTransaction(pending_req_to_RPT.front().first, pending_req_to_RPT.front().second)){
+        if(pending_req_to_RPT.front().second &&
+        waiting_resp_RPT.find(pending_req_to_RPT.front().first) != waiting_resp_RPT.end()){
+            return;
+        }
+
+        if(dram->JedecDRAMSystem::WillAcceptTransaction(pending_req_to_RPT.front().first,
+                                                        pending_req_to_RPT.front().second)){
             dram->JedecDRAMSystem::AddTransaction(pending_req_to_RPT.front().first, pending_req_to_RPT.front().second);
             if(!pending_req_to_RPT.front().second)
                 waiting_resp_RPT.insert(pending_req_to_RPT.front().first);

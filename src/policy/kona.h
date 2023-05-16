@@ -24,6 +24,7 @@ class Kona : public CacheFrontEnd{
     void MissHandler(uint64_t hex_addr, bool is_write) override;
     void WriteBackData(Tag tag_, uint64_t hex_addr_cache) override;
     void HashReadCallBack(uint64_t req_id) override;
+    bool CheckOtherBuffer(uint64_t hex_addr, bool is_write) override{return true;};
   public:
     Kona(std::string output_dir, JedecDRAMSystem *cache, Config &config);
     ~Kona(){};

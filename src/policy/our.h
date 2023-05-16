@@ -118,15 +118,11 @@ class our : public CacheFrontEnd{
         //used when decided to refill to page region
         uint64_t req_id;
         bool to_page_region;
-        //used when free partial data in block region
-        bool free_br;
-        uint32_t pt_index_br;
-        uint32_t rpt_index_br;
         //intermediate_data(uint32_t rpt_index_, PTentry pte_, uint32_t pt_index_):
         //rpt_index(rpt_index_), pte(pte_), pt_index(pt_index_){ valid = true; free_br = false;};
         intermediate_data(uint32_t pt_index_, uint64_t req_id_): pt_index(pt_index_), req_id(req_id_)
-        {valid = true; free_br = false; to_page_region = true;};
-        intermediate_data(){ valid = false; free_br = false;};
+        {valid = true; to_page_region = true;};
+        intermediate_data(){ valid = false;};
     };
     class intermediate_req{
         public:
@@ -169,8 +165,25 @@ class our : public CacheFrontEnd{
     std::vector<RPTentry> rpt_block_region;
     RPTCache rtlb_block_region;
     uint64_t v_hex_addr_cache_br;
-    std::list<uint64_t> pending_req_to_PT_br;
+    std::list<intermediate_data> pending_req_to_PT_br;
     std::list<intermediate_req> front_q_br;
+
+    class MSHR{
+        public:
+        //uint64_t hex_addr_remote;
+        bool is_page_region;
+        uint32_t pt_index;
+        //the slot to be promoted
+        PTentry pte_br;
+        bool is_dirty;
+        MSHR(bool is_page_region_, uint32_t pt_index_): is_page_region(is_page_region_), pt_index(pt_index_){
+            is_dirty = false;
+        };
+        MSHR(){is_dirty = false;};
+    };
+    std::unordered_map<uint64_t, MSHR> MSHRs;
+    std::list<intermediate_req> fetch_engine_q;
+    bool CheckOtherBuffer(uint64_t hex_addr, bool is_write) override;
 
     uint64_t collision_times;
     uint64_t non_collision_times;

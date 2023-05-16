@@ -81,6 +81,14 @@ bool CacheFrontEnd::ProcessOneReq(uint64_t hex_addr, bool is_write, Tag *t, uint
         return hit_and_return(wb_entry->second.first, hex_addr, is_write);
     }
 
+    if(CheckOtherBuffer(hex_addr, is_write)){
+        if(!is_write)
+            resp.emplace_back(std::make_pair(hex_addr,
+                                             GetCLK() + latency));
+        hit++;
+        return true;
+    }
+
     //miss check MSHR
     if(MSHR_sz >= 64)
         return false;

@@ -234,6 +234,10 @@ void HMTTCPU::ReadCallBack(uint64_t addr) {
     auto res = std::find_if(rob.begin(), rob.end(), [addr](const HMTTTransaction a){
         return a.addr == addr && a.r_w == 1;
     });
+    if(res == rob.end()){
+        std::cerr<<"redundant read data "<<addr<<"\n";
+        AbruptExit(__FILE__, __LINE__);
+    }
     res->is_finished = true;
     outstanding --;
 
