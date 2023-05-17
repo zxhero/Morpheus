@@ -191,6 +191,7 @@ class our : public CacheFrontEnd{
     uint64_t refill_to_block;
     uint64_t go_back_to_head;
     uint64_t promotion_to_page;
+    uint64_t wasted_block;
     SimpleStats::HistoCount region_capacity_ratio;
     void CheckHashPT(bool is_page_region);
 

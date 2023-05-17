@@ -173,6 +173,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     refill_to_page = 0;
     go_back_to_head = 0;
     promotion_to_page = 0;
+    wasted_block = 0;
     for (int i = 0; i < 16; ++i) {
         region_capacity_ratio[i] = 0;
     }
@@ -299,7 +300,7 @@ void our::MissHandler(uint64_t hex_addr, bool is_write) {
             return d.req_id / 4096 * 4096 == hex_addr_page;
         }) != pending_req_to_PT_br.end()){
             std::cerr<<"the adjacent block data has already returned "<<hex_addr<<"\n";
-            AbruptExit(__FILE__, __LINE__);
+            //AbruptExit(__FILE__, __LINE__);
         }
         //not send
         mshr_ptr->second.emplace_back(Transaction(hex_addr, is_write));
@@ -357,7 +358,7 @@ void our::Refill(uint64_t req_id) {
         MSHRs.erase(req_id);
     }else{
         //the req has been promoted to page region
-        promotion_to_page ++;
+        wasted_block ++;
     }
 }
 
@@ -445,14 +446,11 @@ void our::Drained() {
             * */
             bool send_page = false;
             if(pte_br.valid && (pte_br.hex_addr_aligned / 4096 * 4096 == hex_addr_page)){
+                promotion_to_page ++;
                 send_page = true;
             }
             else if(CacheFrontEnd::MSHRs[hex_addr_block].size() > 1){
                 send_page = true;
-            }
-            else{
-                MSHRs[hex_addr_block] = MSHR(false, pt_index_br);
-                LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
             }
 
             if(send_page){
@@ -471,6 +469,10 @@ void our::Drained() {
                     tlb_block_region.AddTransaction(pt_index_br, true, PTentry());
                     rtlb_block_region.AddTransaction(pte_br.hex_cache_addr / 256, true, RPTentry());
                 }
+            }
+            else{
+                MSHRs[hex_addr_block] = MSHR(false, pt_index_br);
+                LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
             }
             fetch_engine_q.pop_front();
         }
@@ -759,6 +761,7 @@ void our::PrintStat() {
                     <<"# times of refilling to page: "<<refill_to_page<<"\n"
                     <<"# times of promotion to page: "<<promotion_to_page<<"\n"
                     <<"# times of refilling to block: "<<refill_to_block<<"\n"
+                    <<"# num of wasted block: "<<wasted_block<<"\n"
                     <<"# times of go back to head: "<<go_back_to_head<<"\n";
 
     std::cout<<"the distribution of the ratio of page region: \n";
