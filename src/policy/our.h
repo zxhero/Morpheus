@@ -7,6 +7,8 @@
 #include "cache_frontend.h"
 #include "../../util/murmur3/murmur3.h"
 
+#define PROMOTION_T 2
+
 namespace dramsim3 {
 class PTentry{
     public:
@@ -25,9 +27,10 @@ class RPTentry{
      * we store pt_index to accelerate simulation.
      * */
     uint64_t pt_index;
+    uint64_t offset;
     bool valid;
     RPTentry(){valid = false;};
-    RPTentry(uint64_t pt_index_): pt_index(pt_index_){valid = true;};
+    RPTentry(uint64_t pt_index_, uint64_t offset_): pt_index(pt_index_), offset(offset_){valid = true;};
 };
 
 /*
@@ -36,13 +39,12 @@ class RPTentry{
  * read: direct mapped
  * write has higher priority than read to same address
  * */
-template<class dType>
 class SRAMCache{
   private:
     const uint64_t hex_dram_base_addr;
     const uint64_t dType_sz;
-    std::vector<dType> data;
-    std::vector<dType> *data_backup;
+    std::vector<std::vector<PTentry>> data;
+    std::vector<PTentry> *data_backup;
     std::vector<Tag> tags;
     JedecDRAMSystem *dram;
     //std::function<void(uint64_t req_id)> read_callback_;
@@ -57,15 +59,21 @@ class SRAMCache{
     uint64_t last_hit_req;
   public:
     SRAMCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
-              std::vector<dType> *data_backup_);
-    SRAMCache(){};
+              std::vector<PTentry> *data_backup_);
+    //SRAMCache(){};
     ~SRAMCache(){};
     //hit return true
-    bool AddTransaction(uint64_t hex_offset, bool is_write, dType dptr = dType());
+    bool AddTransaction(uint64_t hex_offset, bool is_write, uint64_t offset = 0, PTentry dptr = PTentry());
     void Drained();
     bool DRAMReadBack(CacheAddr req_id);
-    dType GetData(uint64_t hex_offset);
-    dType WarmUp(uint64_t hex_offset, bool is_write, dType dptr = dType());
+    //return a free pte or randomly chosen one from pte group
+    PTentry GetData(uint64_t hex_offset, uint64_t &offset);
+    //return a pte whose vaddr == tag or false
+    bool GetData(uint64_t hex_offset, uint64_t tag, PTentry &pte);
+    //return pte group at hex_offset
+    std::vector<PTentry> GetDataGroup(uint64_t hex_offset);
+    std::vector<PTentry> WarmUpRead(uint64_t hex_offset);
+    void WarmUPWrite(uint64_t hex_offset, uint64_t offset, PTentry dptr);
 };
 
 /*
@@ -113,6 +121,7 @@ class our : public CacheFrontEnd{
         uint32_t rpt_index;
         PTentry pte;
         uint32_t pt_index;
+        uint64_t offset;
         bool valid;
         bool is_collision = false;
         //used when decided to refill to page region
@@ -139,7 +148,7 @@ class our : public CacheFrontEnd{
         intermediate_req(){};
     };
     std::vector<PTentry> hash_page_table;
-    SRAMCache<PTentry> tlb;
+    SRAMCache tlb;
     std::vector<RPTentry> pte_addr_table;
     RPTCache rtlb;
     uint64_t v_hex_addr_cache;
@@ -161,7 +170,7 @@ class our : public CacheFrontEnd{
     const CacheAddr hashmap_hex_addr_block_region;
     std::vector<Tag> meta_block_region;
     std::vector<PTentry> hpt_block_region;
-    SRAMCache<PTentry> tlb_block_region;
+    SRAMCache tlb_block_region;
     std::vector<RPTentry> rpt_block_region;
     RPTCache rtlb_block_region;
     uint64_t v_hex_addr_cache_br;
@@ -174,7 +183,7 @@ class our : public CacheFrontEnd{
         bool is_page_region;
         uint32_t pt_index;
         //the slot to be promoted
-        PTentry pte_br;
+        std::vector<PTentry> pte_br;
         bool is_dirty;
         MSHR(bool is_page_region_, uint32_t pt_index_): is_page_region(is_page_region_), pt_index(pt_index_){
             is_dirty = false;
