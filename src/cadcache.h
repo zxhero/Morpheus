@@ -66,10 +66,12 @@ class MemoryPool : public JedecDRAMSystem{
 
 const std::unordered_map<std::string, uint64_t> BenchmarkInfo = {
         {"ligra_bfs", (uint64_t)328293*4096},
-        //{"memcached", 325341184},
-        //{"hpcc", 1051770880},
-        //{"wtdbg", 45912064},
-        //{"hpcg", 139956224},
+        {"memcached", (uint64_t)948679*4096},
+        {"recbole", (uint64_t)26067*4096},
+        {"levit", (uint64_t)194955 * 4096},
+        {"canu", (uint64_t)863062 * 4096},
+        {"mix-npb", (uint64_t)390900 * 4096},
+        {"mix-ligra", (uint64_t)266404*4096},
         {"ligra_pagerank", (uint64_t)374708 *4096},
         {"imagenet", (uint64_t)174471 * 4096},
         {"nightmare", (uint64_t)158598*4096},
@@ -95,6 +97,9 @@ class Tag {
     Tag(uint64_t tag_, bool valid_, bool dirty_, uint64_t granularity_);
     Tag(){};
     int utilized();
+    //used in our
+    std::vector<bool> sub_valid;
+    std::vector<uint8_t> sub_tag;
 };
 
 class FrontEnd {

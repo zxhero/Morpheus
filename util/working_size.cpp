@@ -13,7 +13,7 @@ int main(int argc, const char **argv){
     args::ArgumentParser parser(
         "Trace Segmentation.",
         "Examples: \n."
-        "./build/working_size /mnt/hmtt/ligra_bfs ./output/ligra_bfs.seg \n");
+        "./build/working_size /mnt/hmtt/ligra_bfs ./output/ligra_bfs \n");
     args::HelpFlag help(parser, "help", "Display the help menu", {'h', "help"});
     args::Positional<std::string> trace_arg(
         parser, "trace", "The trace file name (mandatory)");
