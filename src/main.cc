@@ -76,11 +76,14 @@ int main(int argc, const char **argv) {
     }
 
     cpu->WarmUp();
+    uint64_t last_trace = 0;
     for (uint64_t clk = 0; clk < cycles && (!(cpu)->IsEnd()); clk++) {
         cpu->ClockTick();
         if(clk % 1000000 == 0){
             std::cout<<"processing "<<std::dec<<clk<<" clks and "<<(cpu)->GetTraceNum()<<" traces "
+            <<(cpu)->GetTraceNum() - last_trace<<" delta "
             <<(cpu)->GetClk()<<" wall clks\n"<<std::flush;
+            last_trace = (cpu)->GetTraceNum();
         }
     }
     (cpu)->Drained();

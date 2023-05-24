@@ -183,7 +183,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_v4_t"+std::to_string(PROMOTION_T));
+    utilization_file.open(output_dir+"/utilization_our_v4");
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -216,6 +216,14 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     std::cout<<"HPT in block region size is "<<hpt_block_region.size()<<"\n"
             <<"tlb size is "<<tlb_block_region.data.size()<<"\n"
             <<"hash page table base: "<<hashmap_hex_addr_block_region<<"\n";
+
+    PROMOTION_T = 0;
+    hit_in_br = 0;
+    hit_in_pr = 0;
+    miss_in_both = 0;
+    for (int i = 0; i <= (4096/256); ++i) {
+        line_utility_partial[i] = 0;
+    }
 }
 
 void our::HashReadCallBack(uint64_t req_id) {
@@ -282,57 +290,61 @@ bool our::GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) {
 void our::MissHandler(uint64_t hex_addr, bool is_write) {
     MSHR_sz ++;
     bool is_first = false;
+    bool is_sent = false;
     uint64_t hex_addr_page = hex_addr / 4096 * 4096;
     uint64_t hex_addr_block = hex_addr / 256 * 256;
-    auto mshr_ptr = std::find_if(CacheFrontEnd::MSHRs.begin(), CacheFrontEnd::MSHRs.end(),
-                                 [hex_addr_page](std::pair<uint64_t, std::list<Transaction>> a){
-        return a.first / 4096 * 4096 == hex_addr_page;
-    });
-    if(mshr_ptr == CacheFrontEnd::MSHRs.end()){
-        is_first = true;
-    }
-
     uint32_t value[128/32];
     MurmurHash3_x64_128(&(hex_addr_page), sizeof(uint64_t), 0, value);
+
+    //auto mshr_ptr = std::find_if(CacheFrontEnd::MSHRs.begin(), CacheFrontEnd::MSHRs.end(),
+    //                             [hex_addr_page, hex_addr_block](std::pair<uint64_t, std::list<Transaction>> a){
+    //    return a.first == hex_addr_page || a.first == hex_addr_block;
+    //});
+    auto mshr_ptr_1 = std::find_if(MSHRs.begin(), MSHRs.end(),
+                                 [hex_addr_page](std::pair<uint64_t, MSHR_g> a){
+        return a.first == hex_addr_page;
+    });
+    auto mshr_ptr_2 = std::find_if(fetch_engine_q.begin(), fetch_engine_q.end(), [hex_addr_page](MSHR_g a){
+        return a.hex_addr_page == hex_addr_page;
+    });
+    auto mshr_ptr_3 = std::find_if(send_page_q.begin(), send_page_q.end(), [hex_addr_page](MSHR_g a){
+        return a.hex_addr_page == hex_addr_page;
+    });
+
+    is_first = mshr_ptr_1 == MSHRs.end() && mshr_ptr_2 == fetch_engine_q.end() && mshr_ptr_3 == send_page_q.end();
+    is_sent = mshr_ptr_1 != MSHRs.end();
+
     if(is_first){
-        CacheFrontEnd::MSHRs[hex_addr_block] = std::list<Transaction>{Transaction(hex_addr, is_write)};
-        fetch_engine_q.emplace_back(intermediate_req(hex_addr, is_write, value[0]));
+        //
+        MSHR_g m = MSHR_g(Transaction(hex_addr, is_write), value[0]);
+        fetch_engine_q.emplace_back(m);
         return;
     }
 
-    auto mshr_ptr_2 = std::find_if(MSHRs.begin(), MSHRs.end(),
-                                 [hex_addr_page](std::pair<uint64_t, MSHR> a){
-        return a.first / 4096 * 4096 == hex_addr_page;
-    });
-
-    if(mshr_ptr_2 != MSHRs.end() && mshr_ptr_2->second.is_page_region){
-        CacheFrontEnd::MSHRs[hex_addr_page].emplace_back(Transaction(hex_addr, is_write));
-    }else if(mshr_ptr_2 != MSHRs.end()){
-        //send 256
-        /*
-        * the remote page is fetched and refill to page region
-        * if more than 1 reqs waiting in MSHR
-        * */
-        //resend a req to fetch page
-        LSQ.emplace_back(RemoteRequest(false, hex_addr_page, 4096 / 64, 0));
-        auto reqs = mshr_ptr->second;
-        //remove old MSHR
-        CacheFrontEnd::MSHRs.erase(mshr_ptr);
-        MSHRs.erase(mshr_ptr_2);
-        //set up new MSHR
-        MSHRs[hex_addr_page] = MSHR(true, value[0] % hash_page_table.size());
-        reqs.emplace_back(Transaction(hex_addr, is_write));
-        CacheFrontEnd::MSHRs[hex_addr_page] = reqs;
-    }else{
-        //the block data has already returned
-        if(std::find_if(pending_req_to_PT_br.begin(), pending_req_to_PT_br.end(), [hex_addr_page](intermediate_data d){
-            return d.req_id / 4096 * 4096 == hex_addr_page;
-        }) != pending_req_to_PT_br.end()){
-            std::cerr<<"the adjacent block data has already returned "<<hex_addr<<"\n";
-            //AbruptExit(__FILE__, __LINE__);
+    if(is_sent){
+        mshr_ptr_1->second.blocks.insert(hex_addr_block);
+        mshr_ptr_1->second.reqs.emplace_back(Transaction(hex_addr, is_write));
+        if(mshr_ptr_1->second.is_page_region){
+            CacheFrontEnd::MSHRs[hex_addr_page].emplace_back(Transaction(hex_addr, is_write));
+        }else if(mshr_ptr_1->second.reqs.size() > 1){
+            send_page_q.emplace_back(mshr_ptr_1->second);
+            MSHRs.erase(mshr_ptr_1);
+        }else if(CacheFrontEnd::MSHRs.find(hex_addr_block) == CacheFrontEnd::MSHRs.end()){
+            CacheFrontEnd::MSHRs[hex_addr_block] = std::list<Transaction>{Transaction(hex_addr, is_write)};
+            LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
+        }else{
+            CacheFrontEnd::MSHRs[hex_addr_block].emplace_back(Transaction(hex_addr, is_write));
         }
-        //not send
-        mshr_ptr->second.emplace_back(Transaction(hex_addr, is_write));
+        return;
+    }
+
+    //not send and not the first
+    if(mshr_ptr_2 != fetch_engine_q.end()){
+        mshr_ptr_2->reqs.emplace_back(Transaction(hex_addr, is_write));
+        mshr_ptr_2->blocks.insert(hex_addr_block);
+    }else{
+        mshr_ptr_3->reqs.emplace_back(Transaction(hex_addr, is_write));
+        mshr_ptr_3->blocks.insert(hex_addr_block);
     }
 }
 
@@ -375,20 +387,33 @@ bool our::CheckOtherBuffer(uint64_t hex_addr, bool is_write) {
 }
 
 void our::Refill(uint64_t req_id) {
-    if(MSHRs.find(req_id) != MSHRs.end()){
-        if(MSHRs[req_id].is_page_region){
-            pending_req_to_PT.emplace_back(intermediate_data(MSHRs[req_id].pt_index, req_id));
-            //update fetched page if data is dirty
-            //if(MSHRs[req_id].is_dirty && MSHRs[req_id].pte_br.valid){
-            //    CacheFrontEnd::MSHRs[req_id].emplace_back(
-            //            Transaction(MSHRs[req_id].pte_br.hex_addr_aligned, true));
-            //}
+    uint64_t hex_addr_page = req_id / 4096 * 4096;
+    if(MSHRs.find(hex_addr_page) != MSHRs.end()){
+        if(MSHRs[hex_addr_page].is_page_region){
+            if(req_id != hex_addr_page){
+                //the req has been promoted to page region
+                wasted_block ++;
+                return;
+            }
+
+            pending_req_to_PT.emplace_back(intermediate_data(MSHRs[req_id].pt_index % hash_page_table.size(), req_id));
+            MSHRs.erase(req_id);
         }else{
-            pending_req_to_PT_br.emplace_back(intermediate_data(MSHRs[req_id].pt_index, req_id));
+            pending_req_to_PT_br.emplace_back(intermediate_data(MSHRs[hex_addr_page].pt_index % hpt_block_region.size(),
+                                                                req_id));
+            for (auto i = MSHRs[hex_addr_page].reqs.begin(); i != MSHRs[hex_addr_page].reqs.end();) {
+                if(i->addr / 256 * 256 == req_id){
+                    i = MSHRs[hex_addr_page].reqs.erase(i);
+                }else
+                    i++;
+            }
+            MSHRs[hex_addr_page].blocks.erase(req_id);
+            MSHRs[hex_addr_page].adjacent_blocks ++;
+            if(MSHRs[hex_addr_page].blocks.size() == 0)
+                MSHRs.erase(hex_addr_page);
         }
-        MSHRs.erase(req_id);
     }else{
-        //the req has been promoted to page region
+        //std::cerr<<"we fetch page after fetch the first block in the page "<<req_id<<"\n";
         wasted_block ++;
     }
 }
@@ -443,6 +468,53 @@ void our::Drained() {
     tlb_block_region.Drained();
     rtlb_block_region.Drained();
 
+    if(GetCLK() % 10000000 == 0){
+        double pr_miss_rate = 1.0*tlb.miss_/(tlb.miss_+tlb.hit_);
+        double br_miss_rate = 1.0*tlb_block_region.miss_/(tlb_block_region.miss_+tlb_block_region.hit_);
+        std::cout<<"# page region TLB hit: "<<tlb.hit_<<"\n"
+                    <<"# TLB miss: "<<tlb.miss_<<"\n"
+                    <<"# rate: "<<pr_miss_rate<<"\n"
+                    <<"# block region TLB hit: "<<tlb_block_region.hit_<<"\n"
+                    <<"# TLB miss: "<<tlb_block_region.miss_<<"\n"
+                    <<"# rate: "<<br_miss_rate<<"\n";
+        std::cout<<"hit in block region "<<hit_in_br<<" "<<1.0*hit_in_br / (hit_in_br + miss_in_both)<<"\n"
+                    <<"hit in page region "<<hit_in_pr<<" "<<1.0*hit_in_pr / (hit_in_pr + miss_in_both)<<"\n"
+                    <<"miss in both "<<miss_in_both<<"\n";
+        uint64_t presum = 0;
+        uint64_t sufsum = 0;
+        for (int i = 0; i <= 8; ++i) {
+            presum += line_utility_partial[i];
+        }
+        for (int i = 9; i <= 16; ++i) {
+            sufsum += line_utility_partial[i];
+        }
+        double sparsity_ratio = 1.0*presum/(presum + sufsum);
+        std::cout<<"prefix sum of utilization: "<<presum<<"\n"
+                <<"suffix sum of  utilization: "<<sufsum<<"\n"
+                <<"ratio: "<<sparsity_ratio<<"\n";
+
+        if(sparsity_ratio > 0.5 && PROMOTION_T < 7){
+            PROMOTION_T ++;
+            std::cout<<"increase threshold to "<<PROMOTION_T<<"\n";
+        }
+
+        //if(br_miss_rate > 0.3 && pr_miss_rate < 0.3 && PROMOTION_T > 0){
+        //    PROMOTION_T --;
+        //    std::cout<<"decrease threshold to "<<PROMOTION_T<<"\n";
+        //}
+
+        tlb.miss_ = 0;
+        tlb.hit_ = 0;
+        tlb_block_region.miss_ = 0;
+        tlb_block_region.hit_ = 0;
+        hit_in_br = 0;
+        hit_in_pr = 0;
+        miss_in_both = 0;
+        for (int i = 0; i <= (4096/256); ++i) {
+            line_utility_partial[i] = 0;
+        }
+    }
+
     if(!pending_req_to_PT.empty() && rtlb.WillAcceptTransaction()){
         uint32_t pt_index = pending_req_to_PT.front().pt_index;
         if(tlb.AddTransaction(pt_index, false)){
@@ -465,63 +537,89 @@ void our::Drained() {
     }
 
     if(!fetch_engine_q.empty()){
-        uint32_t pt_index_br = fetch_engine_q.front().pt_index_br % hpt_block_region.size();
-        uint32_t pt_index = fetch_engine_q.front().pt_index_br % hash_page_table.size();
+        uint32_t pt_index_br = fetch_engine_q.front().pt_index % hpt_block_region.size();
+        uint32_t pt_index = fetch_engine_q.front().pt_index % hash_page_table.size();
         if(tlb_block_region.AddTransaction(pt_index_br, false)){
+            MSHR_g m = std::ref(fetch_engine_q.front());
             std::vector<PTentry> pte_g = tlb_block_region.GetDataGroup(pt_index_br);
-            uint64_t hex_addr_page = fetch_engine_q.front().hex_addr / 4096 * 4096;
-            uint64_t hex_addr_block = fetch_engine_q.front().hex_addr / 256 * 256;
-            /*
-            * the remote page is fetched and refill to page region
-            * if #adjacent block > 2
-            * */
-            bool send_page = false;
-            bool promoted = false;
+            for (int i = 0; i < pte_g.size(); ++i) {
+                if(!(pte_g[i].valid &&
+                    (pte_g[i].hex_addr_aligned / 4096 * 4096 == m.hex_addr_page)))
+                    continue;
 
-            if(CacheFrontEnd::MSHRs[hex_addr_block].size() > 1){
-                send_page = true;
+                m.adjacent_blocks ++;
+            }
+
+            //check returned adjacent blocks
+            for (auto i = pending_req_to_PT_br.begin(); i != pending_req_to_PT_br.end(); ++i) {
+                if(i->req_id / 4096 * 4096 == m.hex_addr_page){
+                    m.adjacent_blocks ++;
+                }
+            }
+
+            if(m.adjacent_blocks > PROMOTION_T || m.reqs.size() > 1){
+                send_page_q.emplace_back(m);
             }else{
-                uint64_t num = std::count_if(pte_g.begin(), pte_g.end(), [hex_addr_page](PTentry a){
-                    if(a.valid && (a.hex_addr_aligned / 4096 * 4096 == hex_addr_page))
-                        return true;
-                    return false;
-                });
-                if(num > PROMOTION_T){
-                    promotion_to_page ++;
-                    send_page = true;
-                    promoted = true;
+                for (auto i = m.blocks.begin(); i != m.blocks.end(); ++i) {
+                    CacheFrontEnd::MSHRs[*i] = std::list<Transaction>{};
+                    LSQ.emplace_back(RemoteRequest(false, *i, 256 / 64, 0));
                 }
-            }
-
-            if(send_page){
-                //send a req to fetch page
-                LSQ.emplace_back(RemoteRequest(false, hex_addr_page, 4096 / 64, 0));
-                auto reqs = CacheFrontEnd::MSHRs[hex_addr_block];
-                //remove old MSHR
-                CacheFrontEnd::MSHRs.erase(hex_addr_block);
-                //set up new MSHR
-                MSHRs[hex_addr_page] = MSHR(true, pt_index);
-                CacheFrontEnd::MSHRs[hex_addr_page] = reqs;
-            }
-
-            if(send_page && promoted){
-                //invalidate data in block region
-                for (int i = 0; i < pte_g.size(); ++i) {
-                    if(!(pte_g[i].valid && (pte_g[i].hex_addr_aligned / 4096 * 4096 == hex_addr_page)))
-                        continue;
-
-                    MSHRs[hex_addr_page].pte_br.emplace_back(pte_g[i]);
-                    MSHRs[hex_addr_page].is_dirty |= meta_block_region[pte_g[i].hex_cache_addr / 256].dirty;
-                    tlb_block_region.AddTransaction(pt_index_br, true, i, PTentry());
-                    rtlb_block_region.AddTransaction(pte_g[i].hex_cache_addr / 256, true, RPTentry());
+                for (auto i = m.reqs.begin(); i != m.reqs.end(); ++i) {
+                    CacheFrontEnd::MSHRs[i->addr / 256 * 256].emplace_back(*i);
                 }
-            }
-
-            if(!send_page){
-                MSHRs[hex_addr_block] = MSHR(false, pt_index_br);
-                LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
+                MSHRs[m.hex_addr_page] = m;
             }
             fetch_engine_q.pop_front();
+        }
+    }
+
+    if(!send_page_q.empty()){
+        uint32_t pt_index_br = send_page_q.front().pt_index % hpt_block_region.size();
+        if(tlb_block_region.AddTransaction(pt_index_br, false)){
+            MSHR_g m = std::ref(send_page_q.front());
+            std::vector<PTentry> pte_g = tlb_block_region.GetDataGroup(pt_index_br);
+
+            //cancel the data if returned
+            for (auto i = pending_req_to_PT_br.begin(); i != pending_req_to_PT_br.end();) {
+                if(i->req_id / 4096 * 4096 == m.hex_addr_page){
+                    m.adjacent_blocks --;
+                    for (auto j = CacheFrontEnd::MSHRs[i->req_id].begin(); j != CacheFrontEnd::MSHRs[i->req_id].end(); ++j) {
+                        m.reqs.emplace_back(*j);
+                    }
+                    m.blocks.insert(i->req_id);
+                    i = pending_req_to_PT_br.erase(i);
+                }else
+                    i++;
+            }
+
+            //remove old mshr if exist
+            for (auto i = CacheFrontEnd::MSHRs.begin(); i != CacheFrontEnd::MSHRs.end();) {
+                if(i->first / 4096 * 4096 == m.hex_addr_page){
+                    i = CacheFrontEnd::MSHRs.erase(i);
+                }else
+                    ++i;
+            }
+
+            //remove ptes in block region
+            for (int i = 0; i < pte_g.size(); ++i) {
+                if(!(pte_g[i].valid && (pte_g[i].hex_addr_aligned / 4096 * 4096 == m.hex_addr_page)))
+                    continue;
+
+                m.pte_br.emplace_back(pte_g[i]);
+                m.is_dirty |= meta_block_region[pte_g[i].hex_cache_addr / 256].dirty;
+                tlb_block_region.AddTransaction(pt_index_br, true, i, PTentry());
+                rtlb_block_region.AddTransaction(pte_g[i].hex_cache_addr / 256, true, RPTentry());
+            }
+
+            //send a page
+            m.is_page_region = true;
+            //send a req to fetch page
+            LSQ.emplace_back(RemoteRequest(false, m.hex_addr_page, 4096 / 64, 0));
+            //set up new MSHR
+            MSHRs[m.hex_addr_page] = m;
+            CacheFrontEnd::MSHRs[m.hex_addr_page] = m.reqs;
+            promotion_to_page ++;
+            send_page_q.pop_front();
         }
     }
 
@@ -539,6 +637,8 @@ void our::Drained() {
             Tag *t_br = NULL;
             uint64_t hex_addr_cache_br;
             bool is_hit_br = GetTag(front_q_br.front().hex_addr, t_br, hex_addr_cache_br, pt_index_br, false);
+            hit_in_br += is_hit_br;
+            miss_in_both += (1 - is_hit_br);
             pending_req_to_Meta.emplace_back(intermediate_req(t_br, hex_addr_cache_br,
                                                               front_q_br.front().hex_addr, front_q_br.front().is_write,
                                                               is_hit_br));
@@ -556,6 +656,7 @@ void our::Drained() {
             Tag *t = NULL;
             uint64_t hex_addr_cache;
             bool is_hit = GetTag(front_q.front().first, t, hex_addr_cache, pt_index, true);
+            hit_in_pr += is_hit;
 
             if(is_hit){
                 pending_req_to_Meta.emplace_back(intermediate_req(t, hex_addr_cache,
@@ -665,6 +766,9 @@ void our::InsertRemotePage(intermediate_data tmp) {
     tlb_ptr->AddTransaction(tmp.pt_index, true, tmp.offset, tmp.pte);
     uint64_t index = tmp.pte.hex_cache_addr / granularity;
     uint64_t hex_addr_remote = tmp.pte.hex_addr_aligned;
+    if((*meta_ptr)[index].valid && (*meta_ptr)[index].granularity > 256){
+        line_utility_partial[(*meta_ptr)[index].utilized()] ++;
+    }
     CacheFrontEnd::DoRefill( hex_addr_remote, (*meta_ptr)[index], tmp.pte.hex_cache_addr, tmp.pte.hex_addr_aligned);
 }
 

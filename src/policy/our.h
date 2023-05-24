@@ -7,7 +7,7 @@
 #include "cache_frontend.h"
 #include "../../util/murmur3/murmur3.h"
 
-#define PROMOTION_T 2
+//#define PROMOTION_T 2
 
 namespace dramsim3 {
 class PTentry{
@@ -177,22 +177,29 @@ class our : public CacheFrontEnd{
     std::list<intermediate_data> pending_req_to_PT_br;
     std::list<intermediate_req> front_q_br;
 
-    class MSHR{
+    class MSHR_g{
         public:
-        //uint64_t hex_addr_remote;
-        bool is_page_region;
+        std::list<Transaction> reqs;
+        std::set<uint64_t> blocks;
         uint32_t pt_index;
+        bool is_page_region;
+        uint64_t adjacent_blocks;
+        uint64_t hex_addr_page;
+        //uint32_t pt_index;
         //the slot to be promoted
         std::vector<PTentry> pte_br;
         bool is_dirty;
-        MSHR(bool is_page_region_, uint32_t pt_index_): is_page_region(is_page_region_), pt_index(pt_index_){
-            is_dirty = false;
+        MSHR_g(Transaction t_, uint32_t pt_index_): MSHR_g(){
+            reqs.emplace_back(t_);
+            pt_index = pt_index_;
+            hex_addr_page = t_.addr / 4096 * 4096;
+            blocks.insert(t_.addr / 256 * 256);
         };
-        MSHR(){is_dirty = false;};
+        MSHR_g(){is_dirty = false; is_page_region = false; adjacent_blocks = 0;};
     };
-    std::unordered_map<uint64_t, MSHR> MSHRs;
-    std::list<intermediate_req> fetch_engine_q;
-    bool CheckOtherBuffer(uint64_t hex_addr, bool is_write) override;
+    std::unordered_map<uint64_t, MSHR_g> MSHRs;
+    std::list<MSHR_g> fetch_engine_q;
+    std::list<MSHR_g> send_page_q;
 
     uint64_t collision_times;
     uint64_t non_collision_times;
@@ -203,6 +210,11 @@ class our : public CacheFrontEnd{
     uint64_t wasted_block;
     SimpleStats::HistoCount region_capacity_ratio;
     void CheckHashPT(bool is_page_region);
+    uint64_t hit_in_br;
+    uint64_t hit_in_pr;
+    uint64_t miss_in_both;
+    uint64_t PROMOTION_T;
+    SimpleStats::HistoCount line_utility_partial;
 
   protected:
     bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;
@@ -211,6 +223,7 @@ class our : public CacheFrontEnd{
     void MissHandler(uint64_t hex_addr, bool is_write) override;
     void WriteBackData(Tag tag_, uint64_t hex_addr_cache) override;
     void HashReadCallBack(uint64_t req_id) override;
+    bool CheckOtherBuffer(uint64_t hex_addr, bool is_write) override;
 
   public:
     our(std::string output_dir, JedecDRAMSystem *cache, Config &config);

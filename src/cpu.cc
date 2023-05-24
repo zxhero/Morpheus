@@ -272,6 +272,20 @@ void HMTTCPU::PrintStats() {
     std::cout<<std::dec<<"app traces: "<<app_trace_count<<"\n";
     std::cout<<"System performance downgradation: "<<1.0 * (wall_clk - clk_) / clk_ * 100.0<<" %\n";
     std::cout<<"average read latency: "<<SimpleStats::GetHistoAvg(read_latency) * memory_system_.GetTCK()<<"ns\n";
+
+    std::vector<uint64_t> bin(5, 0);
+    for (auto i = read_latency.begin(); i != read_latency.end(); ++i) {
+        if(i->first / 500 > 4)
+            bin[4] += i->second;
+        else
+            bin[i->first / 500] += i->second;
+    }
+    std::cout<<"read latency distribution:\n"
+            <<"[0-500): "<<bin[0]<<"\n"
+            <<"[500-1000): "<<bin[1]<<"\n"
+            <<"[1000-1500): "<<bin[2]<<"\n"
+            <<"[1500-2000): "<<bin[3]<<"\n"
+            <<"[2000-): "<<bin[4]<<"\n";
 }
 
 bool HMTTCPU::IsEnd() {
