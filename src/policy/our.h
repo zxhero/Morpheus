@@ -189,6 +189,8 @@ class our : public CacheFrontEnd{
         //the slot to be promoted
         std::vector<PTentry> pte_br;
         bool is_dirty;
+        uint64_t clock;
+        std::unordered_map<uint64_t, uint64_t> send_time;
         MSHR_g(Transaction t_, uint32_t pt_index_): MSHR_g(){
             reqs.emplace_back(t_);
             pt_index = pt_index_;
@@ -214,7 +216,20 @@ class our : public CacheFrontEnd{
     uint64_t hit_in_pr;
     uint64_t miss_in_both;
     uint64_t PROMOTION_T;
+    uint64_t PADDING_T;
+    class threshold{
+        public:
+        uint64_t PROMOTION_T;
+        uint64_t PADDING_T;
+        double miss_rate;
+        threshold(uint64_t PROMOTION_T_, uint64_t PADDING_T_, double miss_rate_):
+        PROMOTION_T(PROMOTION_T_), PADDING_T(PADDING_T_), miss_rate(miss_rate_){};
+    };
+    std::list<threshold> last_status;
     SimpleStats::HistoCount line_utility_partial;
+    SimpleStats::HistoCount padding_interval;
+    SimpleStats::HistoCount miss_penalty;
+    void Sample(SimpleStats::HistoCount &hist, uint64_t key);
 
   protected:
     bool GetTag(uint64_t hex_addr, Tag *&tag_, uint64_t &hex_addr_cache) override;

@@ -183,7 +183,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_v4");
+    utilization_file.open(output_dir+"/utilization_our_v5");
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -218,11 +218,21 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
             <<"hash page table base: "<<hashmap_hex_addr_block_region<<"\n";
 
     PROMOTION_T = 0;
+    PADDING_T = 2.0 * config.rtt / config.tCK;
+    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, 1.0 * PADDING_T));
     hit_in_br = 0;
     hit_in_pr = 0;
     miss_in_both = 0;
     for (int i = 0; i <= (4096/256); ++i) {
         line_utility_partial[i] = 0;
+    }
+}
+
+void our::Sample(SimpleStats::HistoCount &hist, uint64_t key) {
+    if(hist.find(key) == hist.end()){
+        hist[key] = 1;
+    }else{
+        hist[key] ++;
     }
 }
 
@@ -324,16 +334,21 @@ void our::MissHandler(uint64_t hex_addr, bool is_write) {
     if(is_sent){
         mshr_ptr_1->second.blocks.insert(hex_addr_block);
         mshr_ptr_1->second.reqs.emplace_back(Transaction(hex_addr, is_write));
+        uint64_t interval = GetCLK() - mshr_ptr_1->second.clock;
         if(mshr_ptr_1->second.is_page_region){
             CacheFrontEnd::MSHRs[hex_addr_page].emplace_back(Transaction(hex_addr, is_write));
-        }else if(mshr_ptr_1->second.reqs.size() > 1){
+        }else if(interval < PADDING_T){
+            Sample(padding_interval, interval);
             send_page_q.emplace_back(mshr_ptr_1->second);
             MSHRs.erase(mshr_ptr_1);
         }else if(CacheFrontEnd::MSHRs.find(hex_addr_block) == CacheFrontEnd::MSHRs.end()){
             CacheFrontEnd::MSHRs[hex_addr_block] = std::list<Transaction>{Transaction(hex_addr, is_write)};
             LSQ.emplace_back(RemoteRequest(false, hex_addr_block, 256 / 64, 0));
+            mshr_ptr_1->second.send_time[hex_addr_block] = GetCLK();
+            mshr_ptr_1->second.clock = GetCLK();
         }else{
             CacheFrontEnd::MSHRs[hex_addr_block].emplace_back(Transaction(hex_addr, is_write));
+            mshr_ptr_1->second.clock = GetCLK();
         }
         return;
     }
@@ -397,6 +412,7 @@ void our::Refill(uint64_t req_id) {
             }
 
             pending_req_to_PT.emplace_back(intermediate_data(MSHRs[req_id].pt_index % hash_page_table.size(), req_id));
+            Sample(miss_penalty, GetCLK() - MSHRs[req_id].send_time[req_id]);
             MSHRs.erase(req_id);
         }else{
             pending_req_to_PT_br.emplace_back(intermediate_data(MSHRs[hex_addr_page].pt_index % hpt_block_region.size(),
@@ -409,6 +425,7 @@ void our::Refill(uint64_t req_id) {
             }
             MSHRs[hex_addr_page].blocks.erase(req_id);
             MSHRs[hex_addr_page].adjacent_blocks ++;
+            Sample(miss_penalty, GetCLK() - MSHRs[hex_addr_page].send_time[req_id]);
             if(MSHRs[hex_addr_page].blocks.size() == 0)
                 MSHRs.erase(hex_addr_page);
         }
@@ -477,25 +494,57 @@ void our::Drained() {
                     <<"# block region TLB hit: "<<tlb_block_region.hit_<<"\n"
                     <<"# TLB miss: "<<tlb_block_region.miss_<<"\n"
                     <<"# rate: "<<br_miss_rate<<"\n";
+        double miss_rate = 1.0 * miss_in_both / (hit_in_pr + hit_in_br + miss_in_both);
+        double avg_miss_penalty = miss_rate * SimpleStats::GetHistoAvg(miss_penalty);
         std::cout<<"hit in block region "<<hit_in_br<<" "<<1.0*hit_in_br / (hit_in_br + miss_in_both)<<"\n"
                     <<"hit in page region "<<hit_in_pr<<" "<<1.0*hit_in_pr / (hit_in_pr + miss_in_both)<<"\n"
-                    <<"miss in both "<<miss_in_both<<"\n";
-        uint64_t presum = 0;
-        uint64_t sufsum = 0;
-        for (int i = 0; i <= 8; ++i) {
-            presum += line_utility_partial[i];
-        }
-        for (int i = 9; i <= 16; ++i) {
-            sufsum += line_utility_partial[i];
-        }
-        double sparsity_ratio = 1.0*presum/(presum + sufsum);
-        std::cout<<"prefix sum of utilization: "<<presum<<"\n"
-                <<"suffix sum of  utilization: "<<sufsum<<"\n"
-                <<"ratio: "<<sparsity_ratio<<"\n";
+                    <<"miss in both "<<miss_in_both<<"\n"
+                    <<"miss rate: "<<miss_rate<<"\n"
+                    <<"miss penalty: "<<avg_miss_penalty<<"\n";
 
-        if(sparsity_ratio > 0.5 && PROMOTION_T < 7){
-            PROMOTION_T ++;
-            std::cout<<"increase threshold to "<<PROMOTION_T<<"\n";
+        std::vector<uint64_t> partial_sum(4, 0);
+        partial_sum[0] = line_utility_partial[1] + line_utility_partial[2];
+        std::cout<<"1-2 sum of utilization: "<<partial_sum[0]<<"\n";
+        partial_sum[1] = line_utility_partial[3] + line_utility_partial[4];
+        std::cout<<"3-4 sum of utilization: "<<partial_sum[1]<<"\n";
+        for (int i = 5; i <= 8; ++i) {
+            partial_sum[2] += line_utility_partial[i];
+        }
+        std::cout<<"5-8 sum of utilization: "<<partial_sum[2]<<"\n";
+        for (int i = 9; i <= 16; ++i) {
+            partial_sum[3] += line_utility_partial[i];
+        }
+        std::cout<<"9-16 sum of utilization: "<<partial_sum[3]<<"\n";
+        double sparsity_ratio = 1.0*(partial_sum[0] + partial_sum[1] + partial_sum[2])/
+                (partial_sum[0] + partial_sum[1] + partial_sum[2] + partial_sum[3]);
+        std::cout<<"ratio: "<<sparsity_ratio<<"\n";
+
+        uint64_t promotion_ops = promotion_to_page - wasted_block;
+        std::cout<<"padding operations: "<<wasted_block<<"\n"
+                <<"promotion operations: "<<promotion_ops<<"\n";
+        std::cout<<"average padding interval: "<<SimpleStats::GetHistoAvg(padding_interval)<<"\n";
+
+        if(sparsity_ratio > 0.5){
+            if(last_status.empty() || last_status.back().miss_rate > avg_miss_penalty){
+
+                if(PROMOTION_T < 7 && promotion_ops > wasted_block){
+                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty));
+                    PROMOTION_T ++;
+                    std::cout<<"increase threshold to "<<PROMOTION_T<<"\n";
+                }
+
+                if(promotion_ops < wasted_block){
+                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty));
+                    PADDING_T = SimpleStats::GetHistoAvg(padding_interval);
+                    std::cout<<"decrease threshold to "<<PADDING_T<<"\n";
+                }
+            }else{
+                std::cout<<"roll back to "<<last_status.back().PROMOTION_T<<" "<<last_status.back().PADDING_T<<"\n";
+                PROMOTION_T = last_status.back().PROMOTION_T;
+                PADDING_T = last_status.back().PADDING_T;
+                last_status.pop_back();
+                std::cout<<"last status is "<<last_status.back().PROMOTION_T<<" "<<last_status.back().PADDING_T<<"\n";
+            }
         }
 
         //if(br_miss_rate > 0.3 && pr_miss_rate < 0.3 && PROMOTION_T > 0){
@@ -513,6 +562,10 @@ void our::Drained() {
         for (int i = 0; i <= (4096/256); ++i) {
             line_utility_partial[i] = 0;
         }
+        padding_interval.clear();
+        wasted_block = 0;
+        promotion_to_page = 0;
+        miss_penalty.clear();
     }
 
     if(!pending_req_to_PT.empty() && rtlb.WillAcceptTransaction()){
@@ -563,10 +616,12 @@ void our::Drained() {
                 for (auto i = m.blocks.begin(); i != m.blocks.end(); ++i) {
                     CacheFrontEnd::MSHRs[*i] = std::list<Transaction>{};
                     LSQ.emplace_back(RemoteRequest(false, *i, 256 / 64, 0));
+                    m.send_time[*i] = GetCLK();
                 }
                 for (auto i = m.reqs.begin(); i != m.reqs.end(); ++i) {
                     CacheFrontEnd::MSHRs[i->addr / 256 * 256].emplace_back(*i);
                 }
+                m.clock = GetCLK();
                 MSHRs[m.hex_addr_page] = m;
             }
             fetch_engine_q.pop_front();
@@ -616,6 +671,8 @@ void our::Drained() {
             //send a req to fetch page
             LSQ.emplace_back(RemoteRequest(false, m.hex_addr_page, 4096 / 64, 0));
             //set up new MSHR
+            m.send_time[m.hex_addr_page] = GetCLK();
+            m.clock = GetCLK();
             MSHRs[m.hex_addr_page] = m;
             CacheFrontEnd::MSHRs[m.hex_addr_page] = m.reqs;
             promotion_to_page ++;
@@ -924,6 +981,8 @@ void our::PrintStat() {
                     <<"# times of refilling to block: "<<refill_to_block<<"\n"
                     <<"# num of wasted block: "<<wasted_block<<"\n"
                     <<"# times of go back to head: "<<go_back_to_head<<"\n";
+
+    utilization_file<<"Final threshold status: "<<PROMOTION_T<<" "<<PADDING_T<<"\n";
 
     std::cout<<"the distribution of the ratio of page region: \n";
     for (int i = 0; i < 16; ++i) {
