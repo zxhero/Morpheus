@@ -209,6 +209,7 @@ class our : public CacheFrontEnd{
     uint64_t refill_to_block;
     uint64_t go_back_to_head;
     uint64_t promotion_to_page;
+    uint64_t padding_to_page;
     uint64_t wasted_block;
     SimpleStats::HistoCount region_capacity_ratio;
     void CheckHashPT(bool is_page_region);
@@ -217,13 +218,17 @@ class our : public CacheFrontEnd{
     uint64_t miss_in_both;
     uint64_t PROMOTION_T;
     uint64_t PADDING_T;
+    uint64_t idole_time;
+    uint64_t roll_back_times;
     class threshold{
         public:
         uint64_t PROMOTION_T;
         uint64_t PADDING_T;
         double miss_rate;
-        threshold(uint64_t PROMOTION_T_, uint64_t PADDING_T_, double miss_rate_):
-        PROMOTION_T(PROMOTION_T_), PADDING_T(PADDING_T_), miss_rate(miss_rate_){};
+        uint64_t roll_back_times;
+        threshold(uint64_t PROMOTION_T_, uint64_t PADDING_T_, double miss_rate_, uint64_t roll_back_times_):
+        PROMOTION_T(PROMOTION_T_), PADDING_T(PADDING_T_), miss_rate(miss_rate_),
+        roll_back_times(roll_back_times_){};
     };
     std::list<threshold> last_status;
     SimpleStats::HistoCount line_utility_partial;

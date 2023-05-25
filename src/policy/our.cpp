@@ -183,7 +183,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_v5");
+    utilization_file.open(output_dir+"/utilization_our_v6");
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
@@ -202,6 +202,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     refill_to_page = 0;
     go_back_to_head = 0;
     promotion_to_page = 0;
+    padding_to_page = 0;
     wasted_block = 0;
     for (int i = 0; i < 16; ++i) {
         region_capacity_ratio[i] = 0;
@@ -219,10 +220,12 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
 
     PROMOTION_T = 0;
     PADDING_T = 2.0 * config.rtt / config.tCK;
-    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, 1.0 * PADDING_T));
+    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, 1.0 * PADDING_T, 0));
     hit_in_br = 0;
     hit_in_pr = 0;
     miss_in_both = 0;
+    roll_back_times = 0;
+    idole_time = 0;
     for (int i = 0; i <= (4096/256); ++i) {
         line_utility_partial[i] = 0;
     }
@@ -338,6 +341,7 @@ void our::MissHandler(uint64_t hex_addr, bool is_write) {
         if(mshr_ptr_1->second.is_page_region){
             CacheFrontEnd::MSHRs[hex_addr_page].emplace_back(Transaction(hex_addr, is_write));
         }else if(interval < PADDING_T){
+            padding_to_page ++;
             Sample(padding_interval, interval);
             send_page_q.emplace_back(mshr_ptr_1->second);
             MSHRs.erase(mshr_ptr_1);
@@ -486,14 +490,6 @@ void our::Drained() {
     rtlb_block_region.Drained();
 
     if(GetCLK() % 10000000 == 0){
-        double pr_miss_rate = 1.0*tlb.miss_/(tlb.miss_+tlb.hit_);
-        double br_miss_rate = 1.0*tlb_block_region.miss_/(tlb_block_region.miss_+tlb_block_region.hit_);
-        std::cout<<"# page region TLB hit: "<<tlb.hit_<<"\n"
-                    <<"# TLB miss: "<<tlb.miss_<<"\n"
-                    <<"# rate: "<<pr_miss_rate<<"\n"
-                    <<"# block region TLB hit: "<<tlb_block_region.hit_<<"\n"
-                    <<"# TLB miss: "<<tlb_block_region.miss_<<"\n"
-                    <<"# rate: "<<br_miss_rate<<"\n";
         double miss_rate = 1.0 * miss_in_both / (hit_in_pr + hit_in_br + miss_in_both);
         double avg_miss_penalty = miss_rate * SimpleStats::GetHistoAvg(miss_penalty);
         std::cout<<"hit in block region "<<hit_in_br<<" "<<1.0*hit_in_br / (hit_in_br + miss_in_both)<<"\n"
@@ -519,53 +515,117 @@ void our::Drained() {
                 (partial_sum[0] + partial_sum[1] + partial_sum[2] + partial_sum[3]);
         std::cout<<"ratio: "<<sparsity_ratio<<"\n";
 
-        uint64_t promotion_ops = promotion_to_page - wasted_block;
-        std::cout<<"padding operations: "<<wasted_block<<"\n"
+        uint64_t promotion_ops = promotion_to_page - padding_to_page;
+        std::cout<<"padding operations: "<<padding_to_page<<"\n"
                 <<"promotion operations: "<<promotion_ops<<"\n";
         std::cout<<"average padding interval: "<<SimpleStats::GetHistoAvg(padding_interval)<<"\n";
 
-        if(sparsity_ratio > 0.5){
-            if(last_status.empty() || last_status.back().miss_rate > avg_miss_penalty){
+        if(idole_time  == 0){
+            bool roll_back = false;
+            bool increase_promotion = false;
+            bool decrease_padding = false;
+            bool do_nothing = false;
+            bool try_last_state = false;
 
-                if(PROMOTION_T < 7 && promotion_ops > wasted_block){
-                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty));
-                    PROMOTION_T ++;
-                    std::cout<<"increase threshold to "<<PROMOTION_T<<"\n";
+            while(1){
+                bool enable_roll_back = !(last_status.empty() || last_status.back().miss_rate > avg_miss_penalty);
+                bool enable_promotion = PROMOTION_T < 7 && sparsity_ratio > 0.5 && promotion_ops >= padding_to_page;
+                bool enable_padding = PADDING_T > 0 && sparsity_ratio > 0.5 && promotion_ops <= padding_to_page;
+                bool enable_try_last = !last_status.empty() && !(last_status.back().PADDING_T == PADDING_T &&
+                        last_status.back().PROMOTION_T == PROMOTION_T);
+                //if(!(enable_padding || enable_roll_back || enable_promotion)){
+                //    std::cout<<"we do nothing\n";
+                //    break;
+                //}
+
+                uint64_t option = rand() % 5;
+                if(option == 0 && enable_roll_back){
+                    roll_back = true;
+                    break;
                 }
 
-                if(promotion_ops < wasted_block){
-                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty));
-                    PADDING_T = SimpleStats::GetHistoAvg(padding_interval);
-                    std::cout<<"decrease threshold to "<<PADDING_T<<"\n";
+                if(option == 1 && enable_promotion){
+                    increase_promotion = true;
+                    break;
                 }
-            }else{
-                std::cout<<"roll back to "<<last_status.back().PROMOTION_T<<" "<<last_status.back().PADDING_T<<"\n";
+
+                if(option == 2 && enable_padding){
+                    decrease_padding = true;
+                    break;
+                }
+
+                if(option == 3){
+                    std::cout<<"we do nothing: "<<PROMOTION_T<<" "<<PADDING_T<<"\n";
+                    do_nothing = true;
+                    break;
+                }
+
+                if(option == 4 && enable_try_last){
+                    try_last_state = true;
+                    break;
+                }
+            }
+
+            if(roll_back){
                 PROMOTION_T = last_status.back().PROMOTION_T;
                 PADDING_T = last_status.back().PADDING_T;
+                roll_back_times = last_status.back().roll_back_times + 1;
+                idole_time = roll_back_times;
                 last_status.pop_back();
-                std::cout<<"last status is "<<last_status.back().PROMOTION_T<<" "<<last_status.back().PADDING_T<<"\n";
+                std::cout<<"roll back to "<<PROMOTION_T<<" "<<PADDING_T
+                <<" and idole for "<<idole_time<<"\n";
+                if(last_status.empty())
+                    std::cout<<"there is no last status\n";
+                else
+                    std::cout<<"last status is "<<last_status.back().PROMOTION_T<<" "<<
+                    last_status.back().PADDING_T<<"\n";
             }
-        }
 
-        //if(br_miss_rate > 0.3 && pr_miss_rate < 0.3 && PROMOTION_T > 0){
-        //    PROMOTION_T --;
-        //    std::cout<<"decrease threshold to "<<PROMOTION_T<<"\n";
-        //}
+            if(increase_promotion){
+                if(last_status.empty() || avg_miss_penalty < last_status.back().miss_rate)
+                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty, roll_back_times));
+                PROMOTION_T ++;
+                std::cout<<"increase threshold to "<<PROMOTION_T<<"\n";
+                roll_back_times = 0;
+                idole_time = 0;
+            }
 
-        tlb.miss_ = 0;
-        tlb.hit_ = 0;
-        tlb_block_region.miss_ = 0;
-        tlb_block_region.hit_ = 0;
-        hit_in_br = 0;
-        hit_in_pr = 0;
-        miss_in_both = 0;
-        for (int i = 0; i <= (4096/256); ++i) {
-            line_utility_partial[i] = 0;
+            if(decrease_padding){
+                if(last_status.empty() || avg_miss_penalty < last_status.back().miss_rate)
+                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty, roll_back_times));
+                PADDING_T = SimpleStats::GetHistoAvg(padding_interval);
+                std::cout<<"decrease threshold to "<<PADDING_T<<"\n";
+                roll_back_times = 0;
+                idole_time = 0;
+            }
+
+            if(!do_nothing){
+                hit_in_br = 0;
+                hit_in_pr = 0;
+                miss_in_both = 0;
+                for (int i = 0; i <= (4096/256); ++i) {
+                    line_utility_partial[i] = 0;
+                }
+                padding_interval.clear();
+                padding_to_page = 0;
+                promotion_to_page = 0;
+                miss_penalty.clear();
+            }
+
+            if(try_last_state){
+                threshold t = last_status.back();
+                last_status.pop_back();
+                std::cout<<"we try last state: "<<t.PROMOTION_T<<" "<<t.PADDING_T<<"\n";
+                if(avg_miss_penalty < t.miss_rate)
+                    last_status.emplace_back(threshold(PROMOTION_T, PADDING_T, avg_miss_penalty, roll_back_times));
+                PROMOTION_T = t.PROMOTION_T;
+                PADDING_T = t.PADDING_T;
+                roll_back_times = t.roll_back_times;
+                idole_time = 0;
+            }
+        }else{
+            idole_time --;
         }
-        padding_interval.clear();
-        wasted_block = 0;
-        promotion_to_page = 0;
-        miss_penalty.clear();
     }
 
     if(!pending_req_to_PT.empty() && rtlb.WillAcceptTransaction()){
@@ -789,6 +849,7 @@ void our::InsertRemotePage(intermediate_data tmp) {
         if(rpte.valid){
             tlb_ptr->AddTransaction(rpte.pt_index, true, rpte.offset, PTentry());
         }else{
+            //TODO: write back dirty data if necessary
             //free page occupied by page region
             if(!tmp.to_page_region){
                 uint64_t rpt_index_page = tmp.rpt_index / (4096 / 256);
