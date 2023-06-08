@@ -13,7 +13,7 @@ Kona::Kona(std::string output_dir, JedecDRAMSystem *cache, Config &config) :
     index_num(Meta_SRAM.size() / 4),
     hashmap_hex_addr(Meta_SRAM.size()*granularity){
     std::cout<<"Kona frontend\n";
-    utilization_file.open(output_dir+"/utilization_Kona_"+std::to_string(granularity));
+    utilization_file.open(output_dir+"/utilization_Kona_"+std::to_string(config.ratio));
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);

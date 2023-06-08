@@ -8,26 +8,27 @@ namespace dramsim3{
 
 SRAMCache::SRAMCache(uint64_t hex_base, JedecDRAMSystem *dram_, uint64_t sz, uint64_t capacity,
                             std::vector<PTentry> *data_backup_)
-    : hex_dram_base_addr(hex_base), dType_sz(sz), data_backup(data_backup_), dram(dram_){
-    data.resize(capacity);
+    : hex_dram_base_addr(hex_base), dType_sz(sz),
+    assoc(64 / sz), data_backup(data_backup_), dram(dram_){
+    data.resize(capacity / sz / assoc);
     for (int i = 0; i < data.size(); ++i) {
-        data[i].resize(8);
+        data[i].resize(assoc);
     }
-    tags.resize(capacity, Tag(0, false, false, 0));
+    tags.resize(capacity / sz / assoc, Tag(0, false, false, 0));
     hit_ = 0;
     miss_ = 0;
 }
 
 bool SRAMCache::AddTransaction(uint64_t hex_offset, bool is_write, uint64_t offset, PTentry dptr) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
     uint64_t tag = hex_offset_g / tags.size();
 
     bool hit = tags[index].tag == tag && tags[index].valid;
     if(is_write && !hit){
-        (*data_backup)[hex_offset_g * 8 + offset] = dptr;
+        (*data_backup)[hex_offset_g * assoc + offset] = dptr;
         //we do not send write if there is already a read
-        uint64_t hex_dram_addr = hex_dram_base_addr + (hex_offset_g * 8) * dType_sz;
+        uint64_t hex_dram_addr = hex_dram_base_addr + (hex_offset_g * assoc) * dType_sz;
         auto ptr = std::find_if(pending_req_to_dram.begin(), pending_req_to_dram.end(),
                         [hex_dram_addr](std::pair<CacheAddr, bool> a){
             return a.first == hex_dram_addr;
@@ -42,13 +43,13 @@ bool SRAMCache::AddTransaction(uint64_t hex_offset, bool is_write, uint64_t offs
 
         //we write through the data in other situations
         hex_dram_addr = hex_dram_base_addr +
-                (hex_offset_g * 8 + offset) * dType_sz;
+                (hex_offset_g * assoc + offset) * dType_sz;
         pending_req_to_dram.push_back(std::make_pair(hex_dram_addr, true));
         return true;
     }
 
     if(is_write && hit){
-        (*data_backup)[hex_offset_g * 8 + offset] = dptr;
+        (*data_backup)[hex_offset_g * assoc + offset] = dptr;
         data[index][offset] = dptr;
         tags[index].dirty = true;
     }
@@ -56,7 +57,7 @@ bool SRAMCache::AddTransaction(uint64_t hex_offset, bool is_write, uint64_t offs
     //read
     if(!hit){
         //if miss already, we do not resend dram read
-        uint64_t hex_dram_addr = hex_dram_base_addr + (hex_offset_g * 8) * dType_sz;
+        uint64_t hex_dram_addr = hex_dram_base_addr + (hex_offset_g * assoc) * dType_sz;
         if(waiting_resp_from_dram.find(hex_dram_addr) == waiting_resp_from_dram.end()
         && std::find_if(pending_req_to_dram.begin(), pending_req_to_dram.end(),
                         [hex_dram_addr](std::pair<CacheAddr, bool> a){
@@ -87,7 +88,7 @@ void SRAMCache::Drained() {
                                                   pending_req_to_dram.front().second);
             if(!pending_req_to_dram.front().second)
                 waiting_resp_from_dram[pending_req_to_dram.front().first] =
-                    (pending_req_to_dram.front().first - hex_dram_base_addr) / dType_sz / 8;
+                    (pending_req_to_dram.front().first - hex_dram_base_addr) / dType_sz / assoc;
             pending_req_to_dram.pop_front();
         }
     }
@@ -99,12 +100,12 @@ bool SRAMCache::DRAMReadBack(CacheAddr req_id) {
         uint64_t tag = waiting_resp_from_dram[req_id] / tags.size();
         if(tags[index].valid && tags[index].dirty){
             uint64_t hex_dram_addr = hex_dram_base_addr +
-                ((tags[index].tag * tags.size() + index) * 8) * dType_sz;
+                ((tags[index].tag * tags.size() + index) * assoc) * dType_sz;
             pending_req_to_dram.push_back(std::make_pair(hex_dram_addr, true));
         }
         tags[index] = Tag(tag, true, false, 0);
-        for (int i = 0; i < 8; ++i) {
-            data[index][i] = (*data_backup)[waiting_resp_from_dram[req_id] * 8 + i];
+        for (int i = 0; i < assoc; ++i) {
+            data[index][i] = (*data_backup)[waiting_resp_from_dram[req_id] * assoc + i];
         }
         waiting_resp_from_dram.erase(req_id);
         return true;
@@ -114,22 +115,22 @@ bool SRAMCache::DRAMReadBack(CacheAddr req_id) {
 }
 
 PTentry SRAMCache::GetData(uint64_t hex_offset, uint64_t &offset) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < assoc; ++i) {
         if(!data[index][i].valid){
             offset = i;
             return data[index][i];
         }
     }
-    offset = rand() % 8;
+    offset = rand() % assoc;
     return data[index][offset];
 }
 
 bool SRAMCache::GetData(uint64_t hex_offset, uint64_t tag, PTentry &pte) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < assoc; ++i) {
         if(data[index][i].valid && data[index][i].hex_addr_aligned == tag){
             pte = data[index][i];
             return true;
@@ -139,33 +140,33 @@ bool SRAMCache::GetData(uint64_t hex_offset, uint64_t tag, PTentry &pte) {
 }
 
 std::vector<PTentry> SRAMCache::GetDataGroup(uint64_t hex_offset) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
     return data[index];
 }
 
 void SRAMCache::WarmUPWrite(uint64_t hex_offset, uint64_t offset, PTentry dptr) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
     uint64_t tag = hex_offset_g / tags.size();
 
-    (*data_backup)[hex_offset_g * 8 + offset] = dptr;
-    for (int i = 0; i < 8; ++i) {
-        data[index][i] = (*data_backup)[hex_offset_g * 8 + i];
+    (*data_backup)[hex_offset_g * assoc + offset] = dptr;
+    for (int i = 0; i < assoc; ++i) {
+        data[index][i] = (*data_backup)[hex_offset_g * assoc + i];
     }
     tags[index] = Tag(tag, true, true, 0);
 }
 
 std::vector<PTentry> SRAMCache::WarmUpRead(uint64_t hex_offset) {
-    uint64_t hex_offset_g = hex_offset / 8;
+    uint64_t hex_offset_g = hex_offset / assoc;
     uint64_t index = hex_offset_g % tags.size();
     uint64_t tag = hex_offset_g / tags.size();
     bool hit = tags[index].tag == tag && tags[index].valid;
 
     if(!hit){
         tags[index] = Tag(tag, true, false, 0);
-        for (int i = 0; i < 8; ++i) {
-            data[index][i] = (*data_backup)[hex_offset_g * 8 + i];
+        for (int i = 0; i < assoc; ++i) {
+            data[index][i] = (*data_backup)[hex_offset_g * assoc + i];
         }
     }
 
@@ -175,22 +176,31 @@ std::vector<PTentry> SRAMCache::WarmUpRead(uint64_t hex_offset) {
 our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     CacheFrontEnd(output_dir, cache, config),
     hashmap_hex_addr(Meta_SRAM.size()*4096),
-    pte_size(8),
-    tlb(hashmap_hex_addr, cache, pte_size, Meta_SRAM.size() * 2 / 64, &hash_page_table),
-    rtlb(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size, cache, 8, Meta_SRAM.size(), &pte_addr_table),
-    hashmap_hex_addr_block_region(hashmap_hex_addr + Meta_SRAM.size() * 2 * pte_size + Meta_SRAM.size() * 8),
-    tlb_block_region(hashmap_hex_addr_block_region, cache, pte_size, Meta_SRAM.size() * 16 * 2 / 64, &hpt_block_region),
-    rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * 2 * pte_size, cache, 8,
+    pte_size(16),
+    hpt_sz_ratio(config.hpt_ratio),
+    mwl(config.mwl),
+    tlb(hashmap_hex_addr, cache, pte_size, 64 * 1024, &hash_page_table),
+    rtlb(hashmap_hex_addr + Meta_SRAM.size() * hpt_sz_ratio * pte_size, cache, 8, Meta_SRAM.size(), &pte_addr_table),
+    hashmap_hex_addr_block_region(hashmap_hex_addr + Meta_SRAM.size() * hpt_sz_ratio * pte_size + Meta_SRAM.size() * 8),
+    tlb_block_region(hashmap_hex_addr_block_region, cache, pte_size, 1 * 1024 * 1024, &hpt_block_region),
+    rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * hpt_sz_ratio * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_v6");
+    utilization_file.open(output_dir+"/utilization_our_"+std::to_string(config.ratio)+"_"+std::to_string(hpt_sz_ratio)
+    +"_"+std::to_string(mwl));
     if (utilization_file.fail()) {
+        std::cerr << "utilization file does not exist" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
+    }
+    searching_file.open(output_dir+"/searching_"+std::to_string(config.ratio)+"_"+std::to_string(hpt_sz_ratio)
+    +"_"+std::to_string(mwl));
+    if (searching_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
     v_hex_addr_cache = 0;
     uint32_t virtual_cache_page_num = Meta_SRAM.size();
-    hash_page_table.resize(virtual_cache_page_num * 2);
+    hash_page_table.resize(virtual_cache_page_num * hpt_sz_ratio);
     pte_addr_table.resize(Meta_SRAM.size());
     std::cout<<"hash page table size is "<<hash_page_table.size()<<"\n"
             <<"tlb size is "<<tlb.data.size()<<"\n"
@@ -212,7 +222,7 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
 
     v_hex_addr_cache_br = hashmap_hex_addr - 256;
     meta_block_region.resize(Meta_SRAM.size() * 16, Tag(0, false, false, 256));
-    hpt_block_region.resize(Meta_SRAM.size() * 16 * 2);
+    hpt_block_region.resize(Meta_SRAM.size() * 16 * hpt_sz_ratio);
     rpt_block_region.resize(Meta_SRAM.size() * 16);
     std::cout<<"HPT in block region size is "<<hpt_block_region.size()<<"\n"
             <<"tlb size is "<<tlb_block_region.data.size()<<"\n"
@@ -489,7 +499,7 @@ void our::Drained() {
     tlb_block_region.Drained();
     rtlb_block_region.Drained();
 
-    if(GetCLK() % 10000000 == 0){
+    if(GetCLK() % mwl == 0){
         double miss_rate = 1.0 * miss_in_both / (hit_in_pr + hit_in_br + miss_in_both);
         double avg_miss_penalty = miss_rate * SimpleStats::GetHistoAvg(miss_penalty);
         std::cout<<"hit in block region "<<hit_in_br<<" "<<1.0*hit_in_br / (hit_in_br + miss_in_both)<<"\n"
@@ -519,6 +529,7 @@ void our::Drained() {
         std::cout<<"padding operations: "<<padding_to_page<<"\n"
                 <<"promotion operations: "<<promotion_ops<<"\n";
         std::cout<<"average padding interval: "<<SimpleStats::GetHistoAvg(padding_interval)<<"\n";
+        searching_file<<PROMOTION_T<<"\t"<<PADDING_T<<"\n";
 
         if(idole_time  == 0){
             bool roll_back = false;
@@ -529,7 +540,7 @@ void our::Drained() {
 
             while(1){
                 bool enable_roll_back = !(last_status.empty() || last_status.back().miss_rate > avg_miss_penalty);
-                bool enable_promotion = PROMOTION_T < 7 && sparsity_ratio > 0.5 && promotion_ops >= padding_to_page;
+                bool enable_promotion = PROMOTION_T < (64 / pte_size - 1) && sparsity_ratio > 0.5 && promotion_ops >= padding_to_page;
                 bool enable_padding = PADDING_T > 0 && sparsity_ratio > 0.5 && promotion_ops <= padding_to_page;
                 bool enable_try_last = !last_status.empty() && !(last_status.back().PADDING_T == PADDING_T &&
                         last_status.back().PROMOTION_T == PROMOTION_T);
@@ -1043,7 +1054,7 @@ void our::PrintStat() {
                     <<"# num of wasted block: "<<wasted_block<<"\n"
                     <<"# times of go back to head: "<<go_back_to_head<<"\n";
 
-    utilization_file<<"Final threshold status: "<<PROMOTION_T<<" "<<PADDING_T<<"\n";
+    utilization_file<<"# Final threshold status: "<<PROMOTION_T<<" "<<PADDING_T<<"\n";
 
     std::cout<<"the distribution of the ratio of page region: \n";
     for (int i = 0; i < 16; ++i) {

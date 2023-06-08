@@ -12,7 +12,8 @@ DirectMap::DirectMap(std::string output_dir, JedecDRAMSystem *cache, Config &con
             granularity(config.granularity){
     std::cout<<"Direct mapped frontend\n";
     capacity_mask = Meta_SRAM.size() * granularity - 1;
-    utilization_file.open(output_dir+"/utilization_DirectMap_"+std::to_string(granularity));
+    utilization_file.open(output_dir+"/utilization_DirectMap_"+std::to_string(granularity)
+                            +"_"+std::to_string(config.ratio));
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);

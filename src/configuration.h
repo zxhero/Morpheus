@@ -133,6 +133,8 @@ class Config {
     int rtt;
     int bw;     //Gbps
     double ratio;
+    int mwl;    //monitor window length
+    double hpt_ratio;
     int granularity;
     Policy cache_policy;
 

@@ -123,6 +123,8 @@ void Config::InitDRAMParams() {
         {"Direct", Policy::DirectMapped},     {"Dummy", Policy::Dummy},
         {"Kona", Policy::Kona}, {"Our", Policy::Our}};
     cache_policy = policy_pairs[reader.Get("memory_pool", "policy", "Dummy")];
+    hpt_ratio = reader.GetReal("memory_pool", "HPT", 2.0);
+    mwl = GetInteger("memory_pool", "MWL", 10000000);   //10m clk
 
     if (IsHMC()) {
         // the BL for HMC is determined by max block_size, which is a multiple

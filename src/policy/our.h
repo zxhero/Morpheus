@@ -43,6 +43,7 @@ class SRAMCache{
   private:
     const uint64_t hex_dram_base_addr;
     const uint64_t dType_sz;
+    const uint64_t assoc;
     std::vector<std::vector<PTentry>> data;
     std::vector<PTentry> *data_backup;
     std::vector<Tag> tags;
@@ -116,6 +117,8 @@ class our : public CacheFrontEnd{
     //const uint64_t granularity;
     const CacheAddr hashmap_hex_addr;
     const uint32_t pte_size;
+    const double hpt_sz_ratio;
+    const uint32_t mwl;
     class intermediate_data{
         public:
         uint32_t rpt_index;
@@ -147,6 +150,7 @@ class our : public CacheFrontEnd{
         hex_addr(hex_addr_), is_write(is_write_),pt_index_br(pt_index_br_){};
         intermediate_req(){};
     };
+    std::ofstream searching_file;
     std::vector<PTentry> hash_page_table;
     SRAMCache tlb;
     std::vector<RPTentry> pte_addr_table;
