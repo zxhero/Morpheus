@@ -186,16 +186,20 @@ our::our(std::string output_dir, JedecDRAMSystem *cache, Config &config):
     rtlb_block_region(hashmap_hex_addr_block_region + Meta_SRAM.size() * 16 * hpt_sz_ratio * pte_size, cache, 8,
                       Meta_SRAM.size() * 16, &rpt_block_region){
     std::cout<<"our frontend\n";
-    utilization_file.open(output_dir+"/utilization_our_"+std::to_string(config.ratio)+"_"+std::to_string(hpt_sz_ratio)
-    +"_"+std::to_string(mwl));
+    std::string name_suffix = std::to_string(config.ratio)+"_"+std::to_string(hpt_sz_ratio)+"_"+std::to_string(mwl);
+    utilization_file.open(output_dir+"/utilization_our_"+name_suffix);
     if (utilization_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
-    searching_file.open(output_dir+"/searching_"+std::to_string(config.ratio)+"_"+std::to_string(hpt_sz_ratio)
-    +"_"+std::to_string(mwl));
+    searching_file.open(output_dir+"/searching_"+name_suffix);
     if (searching_file.fail()) {
         std::cerr << "utilization file does not exist" << std::endl;
+        AbruptExit(__FILE__, __LINE__);
+    }
+    capacity_file.open(output_dir+"/capacity_"+name_suffix);
+    if (capacity_file.fail()) {
+        std::cerr << "capacity file does not exist" << std::endl;
         AbruptExit(__FILE__, __LINE__);
     }
     v_hex_addr_cache = 0;
@@ -487,6 +491,7 @@ void our::ProceedToNextFree(bool is_page_region) {
         int ratio = page_region_sz / (hashmap_hex_addr / (uint64_t)16);
         region_capacity_ratio[ratio] ++;
 
+        capacity_file<<GetCLK()<<"\t"<<ratio<<"\n";
         go_back_to_head++;
         v_hex_addr_cache_br = hashmap_hex_addr - 256;
         v_hex_addr_cache = 0;
@@ -1049,7 +1054,6 @@ void our::PrintStat() {
                     <<"# RTLB hit: "<<rtlb_block_region.hit_<<"\n"
                     <<"# RTLB miss: "<<rtlb_block_region.miss_<<"\n"
                     <<"# times of refilling to page: "<<refill_to_page<<"\n"
-                    <<"# times of promotion to page: "<<promotion_to_page<<"\n"
                     <<"# times of refilling to block: "<<refill_to_block<<"\n"
                     <<"# num of wasted block: "<<wasted_block<<"\n"
                     <<"# times of go back to head: "<<go_back_to_head<<"\n";

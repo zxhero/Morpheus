@@ -14,6 +14,7 @@ CacheFrontEnd::CacheFrontEnd(std::string output_dir, JedecDRAMSystem *cache, Con
     hit = 0;
     miss = 0;
     wb_hit = 0;
+    refill_times = 0;
     for (int i = 0; i <= (4096/256); ++i) {
         line_utility[i] = 0;
     }
@@ -227,6 +228,7 @@ void CacheFrontEnd::DoRefill(uint64_t req_id, Tag &t, uint64_t hex_addr_cache, u
 }
 
 void CacheFrontEnd::Refill(uint64_t req_id) {
+    refill_times ++;
     Tag *t = NULL;
     uint64_t hex_addr_cache = AllocCPage(req_id, t);
     DoRefill(req_id, *t, hex_addr_cache, req_id);
@@ -247,7 +249,8 @@ void CacheFrontEnd::WarmUp(uint64_t hex_addr, bool is_write) {
 void CacheFrontEnd::PrintStat() {
     utilization_file<<"# hit: "<<std::dec<<hit<<"\n"
             <<"# miss: "<<miss<<"\n"
-            <<"# hit in write back buffer: "<<wb_hit<<"\n";
+            <<"# hit in write back buffer: "<<wb_hit<<"\n"
+            <<"# refill times: "<<refill_times<<"\n";
     utilization_file<<"# cache line utilization\n";
     for (auto i = line_utility.begin(); i != line_utility.end(); ++i) {
         utilization_file<<i->first<<" "<<i->second<<"\n";

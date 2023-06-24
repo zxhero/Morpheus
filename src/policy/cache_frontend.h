@@ -22,6 +22,7 @@ private:
     uint64_t hit;
     uint64_t wb_hit;
     uint64_t miss;
+    uint64_t refill_times;
     SimpleStats::HistoCount line_utility;
     SimpleStats::HistoCount mshr_waiting;
     bool miss_and_return();

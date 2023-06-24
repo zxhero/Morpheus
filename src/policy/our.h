@@ -151,6 +151,7 @@ class our : public CacheFrontEnd{
         intermediate_req(){};
     };
     std::ofstream searching_file;
+    std::ofstream capacity_file;
     std::vector<PTentry> hash_page_table;
     SRAMCache tlb;
     std::vector<RPTentry> pte_addr_table;
@@ -251,7 +252,11 @@ class our : public CacheFrontEnd{
 
   public:
     our(std::string output_dir, JedecDRAMSystem *cache, Config &config);
-    ~our(){};
+    ~our(){
+        capacity_file.close();
+        utilization_file.close();
+        searching_file.close();
+    };
     void Refill(uint64_t req_id) override;
     void Drained() override;
     void WarmUp(uint64_t hex_addr, bool is_write) override;

@@ -83,7 +83,9 @@ const std::unordered_map<std::string, uint64_t> BenchmarkInfo = {
         {"ua", (uint64_t)216961*4096},
         {"ft", (uint64_t)146703*4096},
         {"is", (uint64_t)165790*4096},
-        {"lu", (uint64_t)522357*4096}
+        {"lu", (uint64_t)522357*4096},
+        {"mix-1", (uint64_t)693620*4096},
+        {"mix-2", (uint64_t)319892*4096}
 };
 
 class Tag {
